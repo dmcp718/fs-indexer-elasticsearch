@@ -59,7 +59,7 @@ database:
     url: "duckdb:///data/fs_index.duckdb"
     options:
       memory_limit: "85%"
-      threads: 16
+      threads: 10
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
       compression: "lz4"

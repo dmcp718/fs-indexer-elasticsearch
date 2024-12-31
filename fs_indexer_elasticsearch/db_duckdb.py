@@ -12,8 +12,8 @@ import pytz
 logger = logging.getLogger(__name__)
 
 # Configure optimal thread count for available memory
-THREAD_COUNT = 8  
-EXTERNAL_THREAD_COUNT = max(1, THREAD_COUNT // 2)  
+thread_count = 10
+external_thread_count = max(1, thread_count // 2)
 
 def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     """Initialize the database connection and create tables if they don't exist."""
@@ -25,7 +25,7 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     
     # Connect with optimized settings
     config = {
-        'threads': THREAD_COUNT,
+        'threads': thread_count,
         'memory_limit': '32GB',
         'temp_directory': './.tmp'
     }
@@ -34,8 +34,8 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     conn = duckdb.connect(db_path, config=config)
     
     # Set thread configuration
-    conn.execute(f"SET threads={THREAD_COUNT}")
-    conn.execute(f"SET external_threads={EXTERNAL_THREAD_COUNT}")
+    conn.execute(f"SET threads={thread_count}")
+    conn.execute(f"SET external_threads={external_thread_count}")
     conn.execute("SET memory_limit='32GB'")
     
     # Load Arrow extension for optimal performance with pyarrow
@@ -79,8 +79,8 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
         cursor = conn.cursor()
         
         # Set thread configuration for this cursor
-        cursor.execute(f"SET threads={THREAD_COUNT}")
-        cursor.execute(f"SET external_threads={EXTERNAL_THREAD_COUNT}")
+        cursor.execute(f"SET threads={thread_count}")
+        cursor.execute(f"SET external_threads={external_thread_count}")
         cursor.execute("SET preserve_insertion_order=false")  # Allow parallel inserts
         
         # Pre-process data to avoid per-row operations
