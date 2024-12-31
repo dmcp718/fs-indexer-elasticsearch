@@ -21,10 +21,10 @@ class LucidLinkAPI:
         self.session = None
         self._seen_paths = set()  # Track seen paths to avoid duplicates
         self._dir_cache = {}  # Cache for directory contents
-        self._cache_ttl = 60  # Cache TTL in seconds
-        self._prefetch_depth = 1  # Reduced prefetch depth
+        self._cache_ttl = 300  # Cache TTL in seconds
+        self._prefetch_depth = 1  # Keep prefetch depth small for shallow trees
         self._request_semaphore = None  # For rate limiting
-        self._max_concurrent_requests = 5  # Max concurrent requests
+        self._max_concurrent_requests = 10  # Balanced concurrency
         self._retry_attempts = 3
         self._retry_delay = 1  # seconds
         
@@ -168,15 +168,16 @@ class LucidLinkAPI:
             
             tasks.append(self._get_directory_with_semaphore(directory, semaphore))
             
-        completed = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for directory, result in zip(directories, completed):
-            if isinstance(result, Exception):
-                logger.error(f"Failed to get contents of {directory}: {str(result)}")
-                results[directory] = []
-            else:
-                results[directory] = result
-                
+        if tasks:
+            completed = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for directory, result in zip(directories, completed):
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to get contents of {directory}: {str(result)}")
+                    results[directory] = []
+                else:
+                    results[directory] = result
+                    
         return results
         
     async def _get_directory_with_semaphore(self, directory: str, semaphore: asyncio.Semaphore) -> List[Dict[str, Any]]:
@@ -193,7 +194,7 @@ class LucidLinkAPI:
         else:
             return 25   # Less parallelism for deep directories
             
-    async def traverse_filesystem(self, root_path: str = None, skip_directories: List[str] = None) -> Generator[Dict[str, Any], None, None]:
+    async def traverse_filesystem(self, root_path: str = None, skip_directories: List[str] = None):
         """Traverse the filesystem and yield file/directory info"""
         skip_directories = skip_directories or []
         
@@ -208,6 +209,7 @@ class LucidLinkAPI:
             # Get initial directory contents
             contents = await self.get_directory_contents(current_path)
             
+            # Process all items first
             for item in contents:
                 try:
                     # Clean up item path
@@ -219,20 +221,49 @@ class LucidLinkAPI:
                         continue
                         
                     yield item
-                    
-                    # If directory, traverse recursively
-                    if item['type'] == 'directory':
-                        async for child in self.traverse_filesystem(item_path, skip_directories):
-                            yield child
-                            
                 except Exception as e:
                     logger.error(f"Error processing item {item.get('name', 'unknown')}: {str(e)}")
                     continue
-                    
+            
+            # Then process directories in parallel
+            directories = [
+                item['name'] for item in contents 
+                if item['type'] == 'directory' and 
+                not any(pattern in item['name'] for pattern in skip_directories)
+            ]
+            
+            if directories:
+                # Process directories in parallel
+                tasks = []
+                for directory in directories:
+                    if directory not in self._seen_paths:
+                        self._seen_paths.add(directory)
+                        tasks.append(asyncio.create_task(self._traverse_subdir(directory, skip_directories)))
+                
+                # Wait for all tasks to complete
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for items in results:
+                        if isinstance(items, Exception):
+                            logger.error(f"Error in directory traversal: {str(items)}")
+                            continue
+                        for item in items:
+                            yield item
+                
         except Exception as e:
             logger.error(f"Error traversing filesystem: {str(e)}")
             raise
             
+    async def _traverse_subdir(self, directory: str, skip_directories: List[str]):
+        """Helper method to traverse a subdirectory"""
+        items = []
+        try:
+            async for item in self.traverse_filesystem(directory, skip_directories):
+                items.append(item)
+        except Exception as e:
+            logger.error(f"Error traversing subdirectory {directory}: {str(e)}")
+        return items
+
     async def health_check(self) -> bool:
         """Check if the LucidLink API is available"""
         try:
