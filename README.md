@@ -154,10 +154,10 @@ From the `dist/fs-indexer-es-darwin` directory:
 
 ```bash
 # Using the executable directly
-./fs-indexer --root-path /path/to/index
+./fs-indexer-es --root-path /path/to/index
 
 # Using the helper script
-./run-indexer.sh --root-path /path/to/index
+./run-indexer-es.sh --root-path /path/to/index
 ```
 
 ### Command Line Arguments
