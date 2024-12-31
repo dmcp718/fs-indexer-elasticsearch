@@ -45,6 +45,27 @@ Configure the indexer using `indexer-config.yaml`. Key settings include:
 - File patterns to skip
 - Extension-based filtering
 
+### LucidLink Configuration
+
+The indexer can be configured to work with LucidLink filespaces:
+
+```yaml
+lucidlink_filespace:
+  enabled: true  # Enable LucidLink integration
+  skip_direct_links: false  # Set to true to skip generating direct links (faster indexing)
+```
+
+#### Direct Links
+
+By default, the indexer generates direct links for all files. This allows for direct access to files but can slow down the indexing process. You can disable direct link generation by setting `skip_direct_links: true` in the config file.
+
+Benefits of skipping direct links:
+- Faster indexing performance
+- Reduced API load
+- Lower memory usage
+
+Note that when `skip_direct_links` is enabled, the `direct_link` field in the database will be set to `null` for all files.
+
 ## Usage
 
 ### Basic Usage
@@ -57,7 +78,7 @@ python -m fs_indexer_elasticsearch.main --help
 python -m fs_indexer_elasticsearch.main --root-path /path/to/index
 
 # Use a custom config file
-python -m ffs_indexer_elasticsearch.main --config /path/to/config.yaml --root-path /path/to/index
+python -m fs_indexer_elasticsearch.main --config /path/to/config.yaml --root-path /path/to/index
 ```
 
 The indexer will display progress and performance metrics during operation, including:
@@ -164,6 +185,36 @@ From the `dist/fs-indexer-es-darwin` directory:
 
 - `--root-path PATH`: Specify the root directory to index
 - `--config PATH`: Optional path to custom config file
+- `--mode MODE`: Operation mode (choices: 'elasticsearch', 'index-only')
+  - `elasticsearch`: Run indexer and send records to Elasticsearch (default)
+  - `index-only`: Run indexer only, do not send records to Elasticsearch
+
+### Operation Modes
+
+The indexer can run in two modes:
+
+1. **Elasticsearch Mode** (default)
+   - Indexes files into DuckDB
+   - Sends indexed records to Elasticsearch
+   - Enables full-text search and analytics
+
+2. **Index-Only Mode**
+   - Only indexes files into DuckDB
+   - Skips Elasticsearch integration
+   - Useful for:
+     - Initial indexing of large directories
+     - Testing indexing performance
+     - Scenarios where Elasticsearch is not needed
+
+You can set the mode in two ways:
+1. In the config file:
+   ```yaml
+   mode: elasticsearch  # or 'index-only'
+   ```
+2. Via command line argument (overrides config file):
+   ```bash
+   ./fs-indexer-es --mode index-only
+   ```
 
 ## Building Standalone Executables
 

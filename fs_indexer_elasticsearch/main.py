@@ -397,27 +397,34 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
         async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI) -> None:
             """Process a batch of files by inserting them into DuckDB."""
             try:
-                # Generate direct links for files in parallel
-                direct_link_tasks = []
-                logger.info(f"Processing batch of {len(batch)} items for direct links")
-                for item in batch:
-                    logger.debug(f"Generating direct link for: {item['relative_path']}")
-                    task = lucidlink_api.get_direct_link(item['relative_path'])
-                    direct_link_tasks.append(task)
+                # Generate direct links for files in parallel if not skipped
+                skip_direct_links = config.get('lucidlink_filespace', {}).get('skip_direct_links', False)
+                
+                if not skip_direct_links:
+                    direct_link_tasks = []
+                    logger.info(f"Processing batch of {len(batch)} items for direct links")
+                    for item in batch:
+                        logger.debug(f"Generating direct link for: {item['relative_path']}")
+                        task = lucidlink_api.get_direct_link(item['relative_path'])
+                        direct_link_tasks.append(task)
+                            
+                    # Wait for all direct link generations
+                    if direct_link_tasks:
+                        logger.info(f"Waiting for {len(direct_link_tasks)} direct link tasks")
+                        direct_links = await asyncio.gather(*direct_link_tasks, return_exceptions=True)
                         
-                # Wait for all direct link generations
-                if direct_link_tasks:
-                    logger.info(f"Waiting for {len(direct_link_tasks)} direct link tasks")
-                    direct_links = await asyncio.gather(*direct_link_tasks, return_exceptions=True)
-                    
-                    # Add direct links to batch items
-                    for i, (item, direct_link) in enumerate(zip(batch, direct_links)):
-                        if isinstance(direct_link, Exception):
-                            logger.error(f"Failed to generate direct link for {item['relative_path']}: {direct_link}")
-                            item['direct_link'] = None
-                        else:
-                            logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
-                            item['direct_link'] = direct_link
+                        # Add direct links to batch items
+                        for i, (item, direct_link) in enumerate(zip(batch, direct_links)):
+                            if isinstance(direct_link, Exception):
+                                logger.error(f"Failed to generate direct link for {item['relative_path']}: {direct_link}")
+                                item['direct_link'] = None
+                            else:
+                                logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
+                                item['direct_link'] = direct_link
+                else:
+                    logger.debug("Skipping direct link generation (skip_direct_links is enabled)")
+                    for item in batch:
+                        item['direct_link'] = None
                 
                 processed = bulk_upsert_files(session, batch)
                 with stats.lock:
@@ -506,6 +513,9 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                 # Clean up items that no longer exist
                 logger.info("Cleaning up removed files...")
                 removed_files = cleanup_missing_files(session, current_files)
+                if removed_files and client is not None:
+                    removed_ids, removed_paths = zip(*removed_files)
+                    client.delete_by_ids(list(removed_ids))
                 if removed_files:
                     # Split IDs and paths
                     removed_ids, removed_paths = zip(*removed_files)
@@ -514,15 +524,8 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                         stats.removed_paths = removed_paths
                     logger.info(f"Removed {len(removed_files)} files from DuckDB")
                     
-                    # Delete from Elasticsearch only if files were removed
-                    if client:
-                        client.bulk_delete(list(removed_ids))
-                
         # Run the async function to complete DuckDB indexing
         asyncio.run(process_files_async())
-        
-        # Send data to OpenSearch, including deletions
-        send_data_to_elasticsearch(session, config)
         
     except Exception as e:
         error_msg = f"Error in LucidLink file processing: {str(e)}"
@@ -750,12 +753,16 @@ def main():
         parser = argparse.ArgumentParser(description='Index filesystem metadata')
         parser.add_argument('--config', help='Path to config file')
         parser.add_argument('--root-path', help='Root path to index')
+        parser.add_argument('--mode', choices=['elasticsearch', 'index-only'], 
+                          help='Operation mode: elasticsearch (default) or index-only')
         args = parser.parse_args()
 
         # Load configuration
         config = load_config(args.config)
         if args.root_path:
             config['root_path'] = args.root_path
+        if args.mode:
+            config['mode'] = args.mode
 
         # Configure logging
         configure_logging(config)
@@ -778,35 +785,58 @@ def main():
         # Initialize workflow stats
         stats = WorkflowStats()
 
-        # Initialize Elasticsearch client and set index name with filespace support
-        es_config = config.get('elasticsearch', {})
-        host = es_config.get('host', 'localhost')
-        port = es_config.get('port', 9200)
-        username = es_config.get('username', '')
-        password = es_config.get('password', '')
-        index_name = es_config.get('index_name', 'filesystem')
-        if filespace_name:
-            index_name = f"{index_name}-{filespace_name}"
-            
-        client = ElasticsearchClient(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            index_name=index_name,
-            filespace=filespace_name or ''
-        )
+        # Initialize Elasticsearch client only if needed
+        client = None
+        if config.get('mode', 'elasticsearch') == 'elasticsearch':
+            es_config = config.get('elasticsearch', {})
+            host = es_config.get('host', 'localhost')
+            port = es_config.get('port', 9200)
+            username = es_config.get('username', '')
+            password = es_config.get('password', '')
+            index_name = es_config.get('index_name', 'filesystem')
+            if filespace_name:
+                index_name = f"{index_name}-{filespace_name}"
+                
+            client = ElasticsearchClient(
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                index_name=index_name,
+                filespace=filespace_name or ''
+            )
+            logger.info(f"Connected to Elasticsearch at {host}:{port}")
+        else:
+            logger.info("Skipping Elasticsearch connection (index-only mode)")
 
-        logger.info("Indexing started...")
+        logger.info(f"Starting indexer in {config.get('mode', 'elasticsearch')} mode...")
 
-        # Process files
-        process_lucidlink_files(session, stats, config, client)
+        try:
+            # Process files
+            if config.get('lucidlink_filespace', {}).get('enabled', False):
+                process_lucidlink_files(session, stats, config, client)
+            else:
+                root_path = config.get('root_path')
+                if not root_path:
+                    raise ValueError("Root path not specified")
+                    
+                process_files(session, [{'path': root_path}], stats, config)
+                
+            # Send data to Elasticsearch if in elasticsearch mode
+            if config.get('mode', 'elasticsearch') == 'elasticsearch' and client is not None:
+                send_data_to_elasticsearch(session, config)
+            else:
+                logger.info("Skipping Elasticsearch indexing (index-only mode)")
+                
+            # Log summary
+            log_workflow_summary(stats)
 
-        # Log summary
-        log_workflow_summary(stats)
+        except Exception as e:
+            logger.error(f"Error in main workflow: {str(e)}")
+            sys.exit(1)
 
     except Exception as e:
-        logger.error(f"Error in main workflow: {str(e)}")
+        logger.error(f"Error in main: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":

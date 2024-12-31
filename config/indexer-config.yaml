@@ -22,6 +22,8 @@
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true
+  # Skip generating direct links for files (faster indexing)
+  skip_direct_links: true
 
 # =============================================
 
@@ -38,6 +40,14 @@ elasticsearch:
   password: ""  # Leave empty for no authentication
   index_name: filespace
   ssl: false
+
+# =============================================
+# Operation Mode
+# =============================================
+# Available modes:
+# - elasticsearch: Run indexer and send records to Elasticsearch (default)
+# - index-only: Run indexer only, do not send records to Elasticsearch
+mode: elasticsearch
 
 # =============================================
 # Database configuration
