@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 
 import logging
-import aiohttp
 import asyncio
+import aiohttp
 from datetime import datetime, timezone
-from typing import Dict, List, Generator, Any, Set
+from typing import Dict, List, Generator, Any, Optional
 from urllib.parse import quote
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 import time
 
 logger = logging.getLogger(__name__)
@@ -15,9 +13,10 @@ logger = logging.getLogger(__name__)
 class LucidLinkAPI:
     """Handler for LucidLink Filespace API interactions"""
     
-    def __init__(self, port: int, max_workers: int = 10):
-        """Initialize the API handler with the filespace port"""
+    def __init__(self, port: int, mount_point: str, max_workers: int = 10):
+        """Initialize the API handler with the filespace port and mount point"""
         self.base_url = f"http://127.0.0.1:{port}/files"
+        self.mount_point = mount_point
         self.max_workers = max_workers
         self.session = None
         self._seen_paths = set()  # Track seen paths to avoid duplicates
@@ -248,23 +247,18 @@ class LucidLinkAPI:
             logger.error(f"LucidLink API health check failed: {str(e)}")
             return False
             
-    async def get_direct_link(self, file_path: str) -> str:
-        """Generate a direct link for a file or directory."""
+    async def get_direct_link(self, file_path: str) -> Optional[str]:
+        """Get a direct link for a file"""
         try:
-            # Ensure path starts with / and remove any trailing slashes
-            clean_path = "/" + file_path.strip('/')
-            
-            # API endpoint and parameters with proper URL encoding
-            endpoint = "fsEntry/direct-link"
-            params = {
-                "path": clean_path  # aiohttp will handle URL encoding properly
-            }
-            
-            url = f"{self.base_url.replace('/files', '')}/{endpoint}"
-            logger.debug(f"Requesting direct link for path: {clean_path}")
+            if not self.session:
+                raise RuntimeError("Session not initialized")
+
+            file_path = self._get_relative_path(file_path)  # Convert to relative path
+            encoded_path = quote(file_path)
+            url = f"{self.base_url}/direct-link/{encoded_path}"
             
             async with self._request_semaphore:
-                async with self.session.get(url, params=params) as response:
+                async with self.session.get(url) as response:
                     if response.status == 400:
                         logger.warning(f"Failed to generate direct link for: {file_path} - Bad Request")
                         return None
@@ -282,6 +276,44 @@ class LucidLinkAPI:
         except Exception as e:
             logger.error(f"Error generating direct link for {file_path}: {str(e)}")
             return None
+
+    def _get_relative_path(self, path: str) -> str:
+        """Convert absolute path to relative path using mount point"""
+        if path.startswith(self.mount_point):
+            return path[len(self.mount_point):].lstrip('/')
+        return path
+
+    async def scan_directory(self, path: str) -> List[Dict[str, Any]]:
+        """Scan a directory and return its contents"""
+        try:
+            if not self.session:
+                raise RuntimeError("Session not initialized")
+
+            # Ensure path is relative to mount point
+            rel_path = self._get_relative_path(path)
+            logger.debug(f"Converting path '{path}' to relative path '{rel_path}'")
+            encoded_path = quote(rel_path)
+            url = f"{self.base_url}/list/{encoded_path}"
+            
+            async with self._request_semaphore:
+                async with self.session.get(url) as response:
+                    if response.status == 400:
+                        logger.warning(f"Failed to scan directory: {path} - Bad Request")
+                        return []
+                    
+                    response.raise_for_status()
+                    data = await response.json()
+                    
+                    # Extract the 'result' field
+                    if 'result' not in data:
+                        logger.warning(f"No result field in response for: {path}")
+                        return []
+                        
+                    return data['result']
+                    
+        except Exception as e:
+            logger.error(f"Error scanning directory {path}: {str(e)}")
+            return []
 
     def get_all_files(self) -> List[Dict[str, Any]]:
         """Get all files and directories that were traversed"""

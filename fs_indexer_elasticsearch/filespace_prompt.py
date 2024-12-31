@@ -28,19 +28,14 @@ def load_config(config_path: str = None):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def get_lucidlink_binary(config):
-    """Get the appropriate lucidlink binary based on version in config."""
-    lucidlink_version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
-    return f"lucid{lucidlink_version}"
-
-def get_lucidlink_mount(lucidlink_bin):
+def get_lucidlink_mount(lucidlink_bin, instance_id):
     """
     Get the LucidLink mount point by running the status command.
     Returns the mount point path.
     """
     try:
-        # Run the status command
-        result = subprocess.run([lucidlink_bin, 'status'], 
+        # Run the status command with instance ID
+        result = subprocess.run([lucidlink_bin, '--instance', str(instance_id), 'status'], 
                               capture_output=True, 
                               text=True, 
                               check=True)
@@ -76,16 +71,16 @@ def get_filespace_info(config=None, version=None):
         version (int): LucidLink API version (2 or 3) (optional, overrides config)
     """
     try:
-        # Get the appropriate lucidlink binary
+        # 1. Get version from config or use default
         if config is not None:
-            lucidlink_bin = get_lucidlink_binary(config)
+            version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
         else:
-            lucidlink_bin = f"lucid{version or 3}"
+            version = version or 3
+            
+        # 2. Formulate lucidlink binary command
+        lucidlink_bin = f"lucid{version}"
         
-        # Get mount point first
-        mount_point = get_lucidlink_mount(lucidlink_bin)
-        
-        # Run the list command
+        # 3. Get list of filespaces
         result = subprocess.run([lucidlink_bin, 'list', '--json'], 
                               capture_output=True, 
                               text=True, 
@@ -94,18 +89,23 @@ def get_filespace_info(config=None, version=None):
         # Parse the JSON output
         filespaces = json.loads(result.stdout)
         
+        # 3.5 Check if empty
         if not filespaces:
             print("Error: No filespaces found")
             sys.exit(1)
             
+        # 4. Handle single filespace case
         if len(filespaces) == 1:
-            # Single filespace case
             filespace = filespaces[0]
             filespace_name = filespace['filespace'].replace('.', '-')
             port = filespace['port']
+            instance_id = filespace['instanceId']  
+            # 4.5 Get mount point
+            mount_point = get_lucidlink_mount(lucidlink_bin, instance_id)
+            # 5. Return values
             return filespace_name, port, mount_point
         else:
-            # Multiple filespaces - prompt user to choose
+            # 6. Handle multiple filespaces
             print("\nAvailable filespaces:")
             for idx, fs in enumerate(filespaces, 1):
                 print(f"{idx}. {fs['filespace']} (port: {fs['port']})")
@@ -116,9 +116,12 @@ def get_filespace_info(config=None, version=None):
                     choice_idx = int(choice) - 1
                     
                     if 0 <= choice_idx < len(filespaces):
+                        # 7. Process user choice
                         selected = filespaces[choice_idx]
                         filespace_name = selected['filespace'].replace('.', '-')
                         port = selected['port']
+                        instance_id = selected['instanceId']  
+                        mount_point = get_lucidlink_mount(lucidlink_bin, instance_id)
                         return filespace_name, port, mount_point
                     else:
                         print("Invalid choice. Please enter a number between 1 and", len(filespaces))

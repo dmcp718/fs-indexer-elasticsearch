@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 
+import os
+import sys
+import time
+import yaml
 import logging
 import logging.handlers
-import os
-from pathlib import Path
-from threading import Lock, Event, Thread
-from queue import Queue, Empty
-import asyncio
-import uuid
-import time
-import sys
 import argparse
-from typing import Dict, List, Any, Optional, Generator
-import datetime
-
-import yaml
+import asyncio
+import requests
+import pytz
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Generator
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock, Event
+from queue import Queue, Empty
+import uuid
 import duckdb
 import pandas as pd
 from elasticsearch import helpers
@@ -236,11 +238,6 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
     start_time = time.time()
     scanned_files = 0
     
-    # Use a queue to handle file batches
-    file_queue = Queue(maxsize=max_workers * 2)  # Double buffer for smoother processing
-    stop_event = Event()
-    error_event = Event()
-    
     def scan_directory(dir_path: Path) -> List[Dict[str, Any]]:
         """Scan a single directory using LucidLink API."""
         files = []
@@ -458,7 +455,8 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
         # Initialize API with parallel workers
         max_workers = config.get('performance', {}).get('max_workers', 10)
         port = config.get('lucidlink_filespace', {}).get('port', 9778)
-        
+        mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
+
         async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI) -> int:
             """Process a batch of files by inserting them into DuckDB."""
             try:
@@ -467,6 +465,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                 
                 if not skip_direct_links:
                     # Process batch
+                    direct_link_tasks = []  # Initialize the list
                     if logger.isEnabledFor(logging.INFO):
                         logger.info(f"Processing batch of {len(batch)} items for direct links")
                     for item in batch:
@@ -502,7 +501,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                 
         async def process_files_async():
             try:
-                async with LucidLinkAPI(port=port, max_workers=max_workers) as lucidlink_api:
+                async with LucidLinkAPI(port=port, mount_point=mount_point, max_workers=max_workers) as lucidlink_api:
                     # Check API health first
                     if not await lucidlink_api.health_check():
                         raise RuntimeError("LucidLink API is not available")
@@ -511,9 +510,19 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                     
                     # Get full and relative root paths
                     full_root_path = config.get('root_path', '')
-                    relative_root_path = str(Path(full_root_path).relative_to('/Volumes/dmpfs/production'))
+                    if not full_root_path:
+                        raise ValueError("Root path is required")
+                        
+                    # Get relative path by removing mount point prefix
+                    if not full_root_path.startswith(mount_point):
+                        raise ValueError(f"Root path '{full_root_path}' must be under mount point '{mount_point}'")
+                        
+                    relative_root_path = full_root_path[len(mount_point):].lstrip('/')
+                    # For logging only: if root path equals mount point, show as "/"
+                    display_relative_path = "/" if full_root_path == mount_point else relative_root_path
                     logger.info(f"Full root path: {full_root_path}")
-                    logger.info(f"Relative root path: {relative_root_path}")
+                    logger.info(f"Mount point: {mount_point}")
+                    logger.info(f"Relative root path: {display_relative_path}")
                     
                     # Initialize variables for batch processing
                     batch_dirs = 0
@@ -840,7 +849,8 @@ def main():
         # Load configuration
         config = load_config(args.config)
         if args.root_path:
-            config['root_path'] = args.root_path
+            config['root_path'] = args.root_path  # Set root path from command line
+            logger.info(f"Using root path from command line: {args.root_path}")
         if args.mode:
             config['mode'] = args.mode
 
@@ -851,13 +861,19 @@ def main():
         filespace_name = None
         filespace_port = None
         if config.get('lucidlink_filespace', {}).get('enabled', False):
-            filespace_info = get_filespace_info()
+            filespace_info = get_filespace_info(config)
             if filespace_info:
-                filespace_name, filespace_port = filespace_info
+                filespace_name, filespace_port, mount_point = filespace_info
                 logger.info(f"Using filespace '{filespace_name}' on port {filespace_port}")
+                logger.info(f"Mount point: {mount_point}")
                 config['lucidlink_filespace']['port'] = filespace_port
                 config['lucidlink_filespace']['name'] = filespace_name
-
+                config['lucidlink_filespace']['mount_point'] = mount_point
+                # Update root_path if it's relative to mount point
+                if config.get('root_path', '').startswith(mount_point):
+                    config['root_path'] = config['root_path']
+                    logger.info(f"Using absolute root path: {config['root_path']}")
+        
         # Initialize database connection
         db_url = config['database']['connection']['url']
         session = init_database(db_url)
@@ -874,6 +890,7 @@ def main():
             username = es_config.get('username', '')
             password = es_config.get('password', '')
             index_name = es_config.get('index_name', 'filesystem')
+            filespace_name = config.get('lucidlink_filespace', {}).get('name', '')
             if filespace_name:
                 index_name = f"{index_name}-{filespace_name}"
                 
@@ -885,6 +902,7 @@ def main():
                 index_name=index_name,
                 filespace=filespace_name or ''
             )
+
             logger.info(f"Connected to Elasticsearch at {host}:{port}")
         else:
             logger.info("Skipping Elasticsearch connection (index-only mode)")
