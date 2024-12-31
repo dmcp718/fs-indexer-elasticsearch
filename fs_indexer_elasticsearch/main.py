@@ -20,6 +20,7 @@ import uuid
 import duckdb
 import pandas as pd
 from elasticsearch import helpers
+import signal
 
 from .db_duckdb import (
     init_database,
@@ -35,6 +36,19 @@ logger = logging.getLogger(__name__)
 
 # Define UUID namespace for consistent IDs
 NAMESPACE_DNS = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
+
+# Global flag for graceful shutdown
+shutdown_requested = False
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    global shutdown_requested
+    if not shutdown_requested:
+        logger.info("\nShutdown requested, completing current batch...")
+        shutdown_requested = True
+    else:
+        logger.info("\nForce shutdown requested, exiting immediately...")
+        sys.exit(1)
 
 # Load configuration
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
@@ -535,58 +549,60 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                     batch_size_limit = config['performance']['batch_size']
                     
                     # Process files from LucidLink API using relative path
-                    async for file_info in lucidlink_api.traverse_filesystem(relative_root_path):
-                        try:
-                            # Skip files based on patterns
-                            if should_skip_file(file_info, skip_patterns):
-                                stats.update_stats(skipped=1)
-                                continue
-                            
-                            # Copy file_info to avoid modifying the original
-                            file_info = file_info.copy()
-                            
-                            # Set required fields
-                            file_info['relative_path'] = file_info['name']
-                            file_info['id'] = str(uuid.uuid5(NAMESPACE_DNS, file_info['relative_path']))
-                            
-                            # Initialize LucidLink fields
-                            file_info['lucidlink'] = {
-                                'direct_link': None,
-                                'filespace': config['lucidlink_filespace']['name'],
-                                'port': config['lucidlink_filespace']['port']
-                            }
-                            
-                            # Add to batch
-                            batch.append(file_info)
-                            batch_files += 1 if file_info["type"] == "file" else 0
-                            batch_dirs += 1 if file_info["type"] == "directory" else 0
-                            
-                            # Collect batch stats
-                            batch_size += file_info.get("size", 0)
-                            current_files.append({'id': file_info['id'], 'relative_path': file_info['relative_path']})
-                            files_in_batch += 1
-                            
-                            # Process batch if we've reached the batch size
-                            if files_in_batch >= batch_size_limit:
-                                if logger.isEnabledFor(logging.INFO):
-                                    logger.info(f"Processing batch of {len(batch)} items...")
-                                processed = await process_batch(session, batch, stats, lucidlink_api)
-                                stats.update_stats(updated=processed)
-                                
-                                # Update stats in one lock acquisition
-                                stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
-                                
-                                # Reset batch and stats
-                                batch = []
-                                files_in_batch = 0
-                                batch_dirs = 0
-                                batch_files = 0
-                                batch_size = 0
-                        except Exception as e:
-                            error_msg = f"Error processing file {file_info.get('name', 'unknown')}: {str(e)}"
-                            logger.error(error_msg)
-                            stats.add_error(error_msg)
+                    async for item in lucidlink_api.traverse_filesystem(relative_root_path):
+                        # Check for shutdown request
+                        if shutdown_requested:
+                            logger.info("Gracefully stopping directory scan...")
+                            # Process any remaining items in the batch
+                            if batch:
+                                await process_batch(session, batch, stats, lucidlink_api)
+                            break
+
+                        # Skip files based on patterns
+                        if should_skip_file(item, skip_patterns):
+                            stats.update_stats(skipped=1)
                             continue
+                        
+                        # Copy file_info to avoid modifying the original
+                        item = item.copy()
+                        
+                        # Set required fields
+                        item['relative_path'] = item['name']
+                        item['id'] = str(uuid.uuid5(NAMESPACE_DNS, item['relative_path']))
+                        
+                        # Initialize LucidLink fields
+                        item['lucidlink'] = {
+                            'direct_link': None,
+                            'filespace': config['lucidlink_filespace']['name'],
+                            'port': config['lucidlink_filespace']['port']
+                        }
+                        
+                        # Add to batch
+                        batch.append(item)
+                        batch_files += 1 if item["type"] == "file" else 0
+                        batch_dirs += 1 if item["type"] == "directory" else 0
+                        
+                        # Collect batch stats
+                        batch_size += item.get("size", 0)
+                        current_files.append({'id': item['id'], 'relative_path': item['relative_path']})
+                        files_in_batch += 1
+                        
+                        # Process batch if we've reached the batch size
+                        if files_in_batch >= batch_size_limit:
+                            if logger.isEnabledFor(logging.INFO):
+                                logger.info(f"Processing batch of {len(batch)} items...")
+                            processed = await process_batch(session, batch, stats, lucidlink_api)
+                            stats.update_stats(updated=processed)
+                            
+                            # Update stats in one lock acquisition
+                            stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
+                            
+                            # Reset batch and stats
+                            batch = []
+                            files_in_batch = 0
+                            batch_dirs = 0
+                            batch_files = 0
+                            batch_size = 0
                 
                 # Process remaining files in the last batch
                 if files_in_batch > 0:
@@ -838,6 +854,10 @@ api_base_url = None  # Will be initialized in main()
 def main():
     """Main entry point."""
     try:
+        # Set up signal handling
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
         # Parse command line arguments
         parser = argparse.ArgumentParser(description='Index filesystem metadata')
         parser.add_argument('--config', help='Path to config file')
