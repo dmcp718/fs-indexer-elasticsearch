@@ -7,3 +7,4 @@ pandas>=2.0.0
 pytz>=2023.3
 aiohttp>=3.9.0
 requests>=2.31.0
+pyarrow>=14.0.1

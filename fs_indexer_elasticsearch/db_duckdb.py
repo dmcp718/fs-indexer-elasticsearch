@@ -5,11 +5,15 @@ import os
 from typing import Dict, List, Tuple, Any
 
 import duckdb
-import pandas as pd
+import pyarrow as pa
 from datetime import datetime
 import pytz
 
 logger = logging.getLogger(__name__)
+
+# Configure optimal thread count for available memory
+THREAD_COUNT = 8  
+EXTERNAL_THREAD_COUNT = max(1, THREAD_COUNT // 2)  
 
 def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     """Initialize the database connection and create tables if they don't exist."""
@@ -21,7 +25,7 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     
     # Connect with optimized settings
     config = {
-        'threads': 16,
+        'threads': THREAD_COUNT,
         'memory_limit': '32GB',
         'temp_directory': './.tmp'
     }
@@ -29,8 +33,14 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     # Connect with configuration
     conn = duckdb.connect(db_path, config=config)
     
-    # Set external threads to match main thread count
-    conn.execute("SET external_threads=16")
+    # Set thread configuration
+    conn.execute(f"SET threads={THREAD_COUNT}")
+    conn.execute(f"SET external_threads={EXTERNAL_THREAD_COUNT}")
+    conn.execute("SET memory_limit='32GB'")
+    
+    # Load Arrow extension for optimal performance with pyarrow
+    conn.execute("INSTALL arrow;")
+    conn.execute("LOAD arrow;")
     
     # Create files table with optimized schema
     conn.execute("""
@@ -47,13 +57,15 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
             error_count INTEGER NOT NULL DEFAULT 0,
             last_error VARCHAR,
             PRIMARY KEY (id)
+        ) WITH (
+            checkpoint_threshold='1GB'
         );
     """)
     
-    # Create indexes for common queries
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON lucidlink_files(relative_path);")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_type ON lucidlink_files(type);")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_update ON lucidlink_files(update_time);")
+    # Create indexes for common queries with performance hints
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON lucidlink_files(relative_path) WITH (index_type='art');")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_type ON lucidlink_files(type) WITH (index_type='art');")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_update ON lucidlink_files(update_time) WITH (index_type='art');")
     
     return conn
 
@@ -66,18 +78,20 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
         # Create a cursor for this operation
         cursor = conn.cursor()
         
-        # Set external threads and enable parallel insert
-        cursor.execute("SET external_threads=16")
+        # Set thread configuration for this cursor
+        cursor.execute(f"SET threads={THREAD_COUNT}")
+        cursor.execute(f"SET external_threads={EXTERNAL_THREAD_COUNT}")
         cursor.execute("SET preserve_insertion_order=false")  # Allow parallel inserts
-        cursor.execute("SET threads=16")  # Use all threads for insert
-        
-        # Convert timestamps and prepare data more efficiently
-        now = datetime.now(pytz.utc)
         
         # Pre-process data to avoid per-row operations
         processed_data = []
-        for f in files_batch:
-            processed_data.append({
+        now = datetime.now(pytz.utc)
+        
+        # Process data in chunks for better memory efficiency
+        chunk_size = 10000  
+        for i in range(0, len(files_batch), chunk_size):
+            chunk = files_batch[i:i + chunk_size]
+            chunk_data = [{
                 'id': f['id'],
                 'name': f['name'],
                 'relative_path': f['relative_path'],
@@ -89,20 +103,31 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
                 'indexed_at': now,
                 'error_count': 0,
                 'last_error': None
-            })
+            } for f in chunk]
+            processed_data.extend(chunk_data)
         
-        # Convert to DataFrame in one go
-        df = pd.DataFrame(processed_data)
+        # Convert to Arrow table with optimized schema
+        table = pa.Table.from_pylist(processed_data, schema=pa.schema([
+            ('id', pa.string()),
+            ('name', pa.string()),
+            ('relative_path', pa.string()),
+            ('type', pa.string()),
+            ('size', pa.int64()),
+            ('creation_time', pa.timestamp('us', tz='UTC')),
+            ('update_time', pa.timestamp('us', tz='UTC')),
+            ('direct_link', pa.string()),
+            ('indexed_at', pa.timestamp('us', tz='UTC')),
+            ('error_count', pa.int32()),
+            ('last_error', pa.string())
+        ]))
         
-        # Register DataFrame and perform parallel upsert in a single transaction
+        # Register table and perform parallel upsert in a single transaction
         cursor.execute("BEGIN TRANSACTION")
         try:
-            cursor.register("batch_df", df)
+            cursor.register("batch_table", table)
             cursor.execute("""
                 INSERT OR REPLACE INTO lucidlink_files 
-                SELECT * FROM batch_df
-                WHERE true
-                USING SAMPLE 100 PERCENT (RESERVOIR)
+                SELECT * FROM batch_table
             """)
             cursor.execute("COMMIT")
         except Exception as e:
@@ -124,10 +149,10 @@ def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: Lis
         # Create a cursor for this operation
         cursor = session.cursor()
         
-        # Convert current files to DataFrame
-        df = pd.DataFrame([{'id': f['id']} for f in current_files])
+        # Convert current files to Arrow table
+        table = pa.Table.from_pylist([{'id': f['id']} for f in current_files])
         
-        if df.empty:
+        if len(table) == 0:
             logger.warning("No current files provided for cleanup")
             return []
             
@@ -139,8 +164,8 @@ def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: Lis
         # Create temporary table with current file IDs
         cursor.execute("DROP TABLE IF EXISTS current_files")
         cursor.execute("CREATE TEMP TABLE current_files (id STRING)")
-        cursor.register("current_files_df", df)
-        cursor.execute("INSERT INTO current_files SELECT id FROM current_files_df")
+        cursor.register("current_files_table", table)
+        cursor.execute("INSERT INTO current_files SELECT id FROM current_files_table")
         
         # Get list of files to be removed with their paths
         removed_files = cursor.execute("""
