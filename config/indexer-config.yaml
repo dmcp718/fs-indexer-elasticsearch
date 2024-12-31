@@ -47,7 +47,7 @@ elasticsearch:
 # Available modes:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
-mode: elasticsearch
+mode: index-only
 
 # =============================================
 # Database configuration
@@ -67,21 +67,21 @@ database:
 # =============================================
 performance:
   # Database settings
-  batch_size: 100000
+  batch_size: 100000  # Adjusted for our dataset size
   db_pool_size: 1
   db_max_overflow: 0
   read_buffer_size: 268435456
-  max_workers: 16
+  max_workers: 32
   
   # Memory settings
   mmap_size: 2147483648
   
   # File scanning
-  scan_chunk_size: 20000
+  scan_chunk_size: 25000  # Adjusted for our dataset size
   parallel_scan: true
   
   # Query optimization
-  enable_parallel_scan: false
+  enable_parallel_scan: true
   vacuum_threshold: 10000
   stats_update_frequency: 5000
 

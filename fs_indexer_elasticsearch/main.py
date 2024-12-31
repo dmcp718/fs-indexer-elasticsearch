@@ -4,7 +4,7 @@ import logging
 import logging.handlers
 import os
 from pathlib import Path
-from threading import Lock, Event
+from threading import Lock, Event, Thread
 from queue import Queue, Empty
 import asyncio
 import uuid
@@ -12,6 +12,7 @@ import time
 import sys
 import argparse
 from typing import Dict, List, Any, Optional, Generator
+import datetime
 
 import yaml
 import duckdb
@@ -235,77 +236,105 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
     start_time = time.time()
     scanned_files = 0
     
+    # Use a queue to handle file batches
+    file_queue = Queue(maxsize=max_workers * 2)  # Double buffer for smoother processing
+    stop_event = Event()
+    error_event = Event()
+    
     def scan_directory(dir_path: Path) -> List[Dict[str, Any]]:
-        """Scan a single directory and its immediate files."""
+        """Scan a single directory using LucidLink API."""
         files = []
         try:
-            for entry in os.scandir(dir_path):
-                try:
-                    path = Path(entry.path)
-                    if entry.is_file() and not should_skip_file(file_info={'name': str(path), 'type': 'file'}, config=config):
-                        stat = entry.stat()
-                        files.append({
-                            "rel_path": str(path.relative_to(root_path)),
-                            "path": str(path),
-                            "size": stat.st_size,
-                            "mtime": stat.st_mtime
-                        })
-                except (OSError, ValueError) as e:
-                    logger.error(f"Error scanning {entry.path}: {e}")
-        except OSError as e:
+            # Get directory listing from API
+            api_response = requests.get(f"{api_base_url}/list", params={
+                'path': str(dir_path.relative_to(root_path))
+            }, timeout=30)
+            api_response.raise_for_status()
+            
+            # Process files and directories
+            for entry in api_response.json():
+                if entry['type'] == 'file' and not should_skip_file(file_info={'name': entry['name'], 'type': 'file'}, skip_patterns=config.get('skip_patterns', {})):
+                    files.append({
+                        'id': str(uuid.uuid4()),
+                        'name': entry['name'],
+                        'relative_path': str(Path(dir_path, entry['name']).relative_to(root_path)),
+                        'type': 'file',
+                        'size': entry['size'],
+                        'creation_time': datetime.fromtimestamp(entry['creationTime'] / 1e9, tz=pytz.utc),
+                        'update_time': datetime.fromtimestamp(entry['updateTime'] / 1e9, tz=pytz.utc)
+                    })
+                
+        except Exception as e:
             logger.error(f"Error scanning directory {dir_path}: {e}")
         return files
-
-    # Get all directories first
-    dirs_to_scan = []
+    
+    # Get initial directory listing
     try:
-        for entry in os.scandir(root_path):
-            try:
-                path = Path(entry.path)
-                if entry.is_dir() and not should_skip_file(file_info={'name': str(path), 'type': 'directory'}, config=config):
-                    dirs_to_scan.append(path)
-                elif entry.is_file() and not should_skip_file(file_info={'name': str(path), 'type': 'file'}, config=config):
-                    # Process root files immediately
-                    stat = entry.stat()
-                    scanned_files += 1
-                    yield {
-                        "rel_path": str(path.relative_to(root_path)),
-                        "path": str(path),
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime
-                    }
-            except (OSError, ValueError) as e:
-                logger.error(f"Error accessing {entry.path}: {e}")
-    except OSError as e:
-        logger.error(f"Error scanning root directory {root_path}: {e}")
+        api_response = requests.get(f"{api_base_url}/list", timeout=30)
+        api_response.raise_for_status()
+        root_entries = api_response.json()
+    except Exception as e:
+        logger.error(f"Error getting root directory listing: {e}")
         return
-
+    
+    # Process root entries
+    dirs_to_scan = []
+    for entry in root_entries:
+        try:
+            path = Path(entry['name'])
+            if entry['type'] == 'directory' and not should_skip_file(file_info={'name': entry['name'], 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
+                dirs_to_scan.append(root_path / path)
+            elif entry['type'] == 'file' and not should_skip_file(file_info={'name': entry['name'], 'type': 'file'}, skip_patterns=config.get('skip_patterns', {})):
+                scanned_files += 1
+                yield {
+                    'id': str(uuid.uuid4()),
+                    'name': entry['name'],
+                    'relative_path': str(path),
+                    'type': 'file',
+                    'size': entry['size'],
+                    'creation_time': datetime.fromtimestamp(entry['creationTime'] / 1e9, tz=pytz.utc),
+                    'update_time': datetime.fromtimestamp(entry['updateTime'] / 1e9, tz=pytz.utc)
+                }
+        except Exception as e:
+            logger.error(f"Error processing root entry {entry['name']}: {e}")
+    
     # Process directories in parallel chunks
-    chunk_size = config["scan_chunk_size"]
-    with asyncio.ThreadPoolExecutor(max_workers=max_workers) as executor:
+    chunk_size = config["performance"]["scan_chunk_size"]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while dirs_to_scan:
             # Take next chunk of directories
             chunk = dirs_to_scan[:chunk_size]
             dirs_to_scan = dirs_to_scan[chunk_size:]
             
             # Process current chunk
-            for dir_files in executor.map(scan_directory, chunk):
-                scanned_files += len(dir_files)
-                for file_info in dir_files:
-                    yield file_info
+            futures = []
+            for dir_path in chunk:
+                future = executor.submit(scan_directory, dir_path)
+                futures.append(future)
+            
+            # Get results and subdirectories
+            for future in as_completed(futures):
+                try:
+                    dir_files = future.result()
+                    scanned_files += len(dir_files)
+                    for file_info in dir_files:
+                        yield file_info
+                except Exception as e:
+                    logger.error(f"Error processing directory chunk: {e}")
             
             # Get subdirectories from processed directories
             for dir_path in chunk:
                 try:
-                    for entry in os.scandir(dir_path):
-                        try:
-                            path = Path(entry.path)
-                            if entry.is_dir() and not should_skip_file(file_info={'name': str(path), 'type': 'directory'}, config=config):
-                                dirs_to_scan.append(path)
-                        except (OSError, ValueError) as e:
-                            logger.error(f"Error accessing {entry.path}: {e}")
-                except OSError as e:
-                    logger.error(f"Error scanning directory {dir_path}: {e}")
+                    api_response = requests.get(f"{api_base_url}/list", params={
+                        'path': str(dir_path.relative_to(root_path))
+                    }, timeout=30)
+                    api_response.raise_for_status()
+                    
+                    for entry in api_response.json():
+                        if entry['type'] == 'directory' and not should_skip_file(file_info={'name': entry['name'], 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
+                            dirs_to_scan.append(dir_path / entry['name'])
+                except Exception as e:
+                    logger.error(f"Error getting subdirectories for {dir_path}: {e}")
             
             # Log progress
             scan_duration = time.time() - start_time

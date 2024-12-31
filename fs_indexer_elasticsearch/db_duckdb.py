@@ -1,15 +1,13 @@
 """DuckDB database layer for file indexer."""
 
 import logging
+import os
+from typing import Dict, List, Tuple, Any
+
 import duckdb
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Any, Tuple
 import pandas as pd
-from dateutil import tz
+from datetime import datetime
 import pytz
-import uuid
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -18,72 +16,114 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     # Extract the actual file path from the URL
     db_path = db_url.replace('duckdb:///', '')
     
-    conn = duckdb.connect(db_path)
+    # Create temp directory if it doesn't exist
+    os.makedirs("./.tmp", exist_ok=True)
     
-    # Create files table if not exists
+    # Connect with optimized settings
+    config = {
+        'threads': 16,
+        'memory_limit': '32GB',
+        'temp_directory': './.tmp'
+    }
+    
+    # Connect with configuration
+    conn = duckdb.connect(db_path, config=config)
+    
+    # Set external threads to match main thread count
+    conn.execute("SET external_threads=16")
+    
+    # Create files table with optimized schema
     conn.execute("""
         CREATE TABLE IF NOT EXISTS lucidlink_files (
-            id VARCHAR PRIMARY KEY,
-            name VARCHAR,
-            relative_path VARCHAR,
-            type VARCHAR,
-            size BIGINT,
-            creation_time TIMESTAMP WITH TIME ZONE,
-            update_time TIMESTAMP WITH TIME ZONE,
+            id VARCHAR NOT NULL,
+            name VARCHAR NOT NULL,
+            relative_path VARCHAR NOT NULL,
+            type VARCHAR NOT NULL,
+            size BIGINT NOT NULL,
+            creation_time TIMESTAMP WITH TIME ZONE NOT NULL,
+            update_time TIMESTAMP WITH TIME ZONE NOT NULL,
             direct_link VARCHAR,
-            indexed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            error_count INTEGER DEFAULT 0,
-            last_error VARCHAR
+            indexed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            last_error VARCHAR,
+            PRIMARY KEY (id)
         );
     """)
+    
+    # Create indexes for common queries
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON lucidlink_files(relative_path);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_type ON lucidlink_files(type);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_update ON lucidlink_files(update_time);")
     
     return conn
 
 def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[str, Any]]) -> int:
-    """Perform optimized bulk upsert of files using DuckDB."""
+    """Bulk upsert files into the database using a cursor for thread safety."""
+    if not files_batch:
+        return 0
+        
     try:
-        if not files_batch:
-            return 0
-
+        # Create a cursor for this operation
+        cursor = conn.cursor()
+        
+        # Set external threads and enable parallel insert
+        cursor.execute("SET external_threads=16")
+        cursor.execute("SET preserve_insertion_order=false")  # Allow parallel inserts
+        cursor.execute("SET threads=16")  # Use all threads for insert
+        
+        # Convert timestamps and prepare data more efficiently
         now = datetime.now(pytz.utc)
         
-        # Convert timestamps and prepare data
-        df = pd.DataFrame([{
-            'id': f['id'],
-            'name': f['name'],  # Use name from API
-            'relative_path': f['name'],  # Use name from API as relative path
-            'type': f['type'],
-            'size': f.get('size', 0),
-            'creation_time': datetime.fromtimestamp(f['creationTime'] / 1e9, tz=pytz.utc),
-            'update_time': datetime.fromtimestamp(f['updateTime'] / 1e9, tz=pytz.utc),
-            'direct_link': f.get('direct_link', None),
-            'indexed_at': now,
-            'error_count': 0,
-            'last_error': None
-        } for f in files_batch])
+        # Pre-process data to avoid per-row operations
+        processed_data = []
+        for f in files_batch:
+            processed_data.append({
+                'id': f['id'],
+                'name': f['name'],
+                'relative_path': f['relative_path'],
+                'type': f['type'],
+                'size': f['size'],
+                'creation_time': f.get('creation_time', now),
+                'update_time': f.get('update_time', now),
+                'direct_link': f.get('direct_link', None),
+                'indexed_at': now,
+                'error_count': 0,
+                'last_error': None
+            })
         
-        logger.debug(f"Prepared DataFrame for DuckDB: {df.head()}")
+        # Convert to DataFrame in one go
+        df = pd.DataFrame(processed_data)
         
-        # Register DataFrame and perform upsert
-        conn.register("batch_df", df)
-        
-        conn.execute("""
-            INSERT OR REPLACE INTO lucidlink_files 
-            SELECT * FROM batch_df
-        """)
-        
-        logger.info(f"Bulk upserted {len(files_batch)} records into DuckDB")
+        # Register DataFrame and perform parallel upsert in a single transaction
+        cursor.execute("BEGIN TRANSACTION")
+        try:
+            cursor.register("batch_df", df)
+            cursor.execute("""
+                INSERT OR REPLACE INTO lucidlink_files 
+                SELECT * FROM batch_df
+                WHERE true
+                USING SAMPLE 100 PERCENT (RESERVOIR)
+            """)
+            cursor.execute("COMMIT")
+        except Exception as e:
+            cursor.execute("ROLLBACK")
+            raise
         
         return len(files_batch)
         
     except Exception as e:
         logger.error(f"Bulk upsert failed: {str(e)}")
         raise
+    finally:
+        cursor.close()
 
 def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: List[Dict[str, str]]) -> List[Tuple[str, str]]:
     """Remove files from the database that no longer exist in the filesystem.
     Returns a list of tuples (id, path) that were removed."""
     try:
+        # Create a cursor for this operation
+        cursor = session.cursor()
+        
         # Convert current files to DataFrame
         df = pd.DataFrame([{'id': f['id']} for f in current_files])
         
@@ -92,18 +132,18 @@ def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: Lis
             return []
             
         # Log current state
-        total_files = session.execute("SELECT COUNT(*) FROM lucidlink_files").fetchone()[0]
+        total_files = cursor.execute("SELECT COUNT(*) FROM lucidlink_files").fetchone()[0]
         logger.info(f"Total files in database before cleanup: {total_files}")
         logger.info(f"Current files provided for cleanup: {len(current_files)}")
         
         # Create temporary table with current file IDs
-        session.execute("DROP TABLE IF EXISTS current_files")
-        session.execute("CREATE TEMP TABLE current_files (id STRING)")
-        session.register("current_files_df", df)
-        session.execute("INSERT INTO current_files SELECT id FROM current_files_df")
+        cursor.execute("DROP TABLE IF EXISTS current_files")
+        cursor.execute("CREATE TEMP TABLE current_files (id STRING)")
+        cursor.register("current_files_df", df)
+        cursor.execute("INSERT INTO current_files SELECT id FROM current_files_df")
         
         # Get list of files to be removed with their paths
-        removed_files = session.execute("""
+        removed_files = cursor.execute("""
             SELECT id, name, type FROM lucidlink_files
             WHERE id NOT IN (SELECT id FROM current_files)
         """).fetchall()
@@ -116,7 +156,7 @@ def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: Lis
                 logger.info(f"  ... and {len(removed_files) - 5} more")
         
         # Delete files that don't exist in current_files
-        session.execute("""
+        cursor.execute("""
             DELETE FROM lucidlink_files
             WHERE id NOT IN (SELECT id FROM current_files)
         """)
@@ -124,11 +164,11 @@ def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: Lis
         logger.info(f"Deleted {len(removed_files)} files from database")
         
         # Log final state
-        remaining_files = session.execute("SELECT COUNT(*) FROM lucidlink_files").fetchone()[0]
+        remaining_files = cursor.execute("SELECT COUNT(*) FROM lucidlink_files").fetchone()[0]
         logger.info(f"Files remaining after cleanup: {remaining_files}")
         
         # Drop temporary table
-        session.execute("DROP TABLE IF EXISTS current_files")
+        cursor.execute("DROP TABLE IF EXISTS current_files")
         
         # Return list of removed file IDs and paths
         return [(row[0], row[1]) for row in removed_files]
@@ -137,26 +177,29 @@ def cleanup_missing_files(session: duckdb.DuckDBPyConnection, current_files: Lis
         logger.error(f"Cleanup failed: {str(e)}")
         raise
     finally:
-        # Cleanup temporary table
-        session.execute("DROP TABLE IF EXISTS current_files")
+        # Close the cursor
+        cursor.close()
 
 def get_database_stats(conn: duckdb.DuckDBPyConnection) -> Dict[str, Any]:
     """Get database statistics."""
     try:
+        # Create a cursor for this operation
+        cursor = conn.cursor()
+        
         stats = {}
         
         # Get total rows
-        stats['total_rows'] = conn.execute("""
+        stats['total_rows'] = cursor.execute("""
             SELECT COUNT(*) FROM lucidlink_files
         """).fetchone()[0]
         
         # Get total size
-        stats['total_size'] = conn.execute("""
+        stats['total_size'] = cursor.execute("""
             SELECT SUM(size) FROM lucidlink_files
         """).fetchone()[0]
         
         # Get file count by type
-        type_counts = conn.execute("""
+        type_counts = cursor.execute("""
             SELECT type, COUNT(*) as count
             FROM lucidlink_files
             GROUP BY type
@@ -169,12 +212,18 @@ def get_database_stats(conn: duckdb.DuckDBPyConnection) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get database stats: {str(e)}")
         raise
+    finally:
+        # Close the cursor
+        cursor.close()
 
 def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
     """Check if the database needs a schema update by checking for required columns."""
     try:
+        # Create a cursor for this operation
+        cursor = conn.cursor()
+        
         # Get column names from lucidlink_files table
-        result = conn.execute("""
+        result = cursor.execute("""
             SELECT column_name 
             FROM information_schema.columns 
             WHERE table_name = 'lucidlink_files'
@@ -188,16 +237,22 @@ def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
         logger.error(f"Error checking schema: {str(e)}")
         # If there's an error (like table doesn't exist), assume we need an update
         return True
+    finally:
+        # Close the cursor
+        cursor.close()
 
 def reset_database(conn: duckdb.DuckDBPyConnection) -> None:
     """Drop and recreate all tables."""
     try:
+        # Create a cursor for this operation
+        cursor = conn.cursor()
+        
         # Drop existing tables
-        conn.execute("DROP TABLE IF EXISTS lucidlink_files")
-        conn.execute("DROP TABLE IF EXISTS temp_batch")
+        cursor.execute("DROP TABLE IF EXISTS lucidlink_files")
+        cursor.execute("DROP TABLE IF EXISTS temp_batch")
         
         # Recreate tables with new schema
-        conn.execute("""
+        cursor.execute("""
             CREATE TABLE lucidlink_files (
                 id VARCHAR PRIMARY KEY,
                 name VARCHAR,
@@ -215,6 +270,10 @@ def reset_database(conn: duckdb.DuckDBPyConnection) -> None:
         logger.info("Database tables reset successfully")
         
         logger.info("Database reset completed successfully")
+        
     except Exception as e:
         logger.error(f"Error resetting database: {str(e)}")
         raise
+    finally:
+        # Close the cursor
+        cursor.close()
