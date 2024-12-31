@@ -3,15 +3,24 @@
 import json
 import subprocess
 import sys
+import argparse
 
-def get_filespace_info():
+def get_filespace_info(version=3):
     """
     Run 'lucid list --json' command and process the output to get filespace info.
-    Returns tuple of (filespace_name, port) where filespace_name has '.' replaced with '-'
+    Returns tuple of (filespace_name, port, version) where filespace_name has '.' replaced with '-'
+    
+    Args:
+        version (int): LucidLink API version (2 or 3)
     """
     try:
-        # Run the lucid list command and capture output
-        result = subprocess.run(['lucid', 'list', '--json'], 
+        # Run the appropriate lucid list command based on version
+        if version == 2:
+            cmd = ['lucid', 'list', '--json']
+        else:  # version 3
+            cmd = ['lucid', 'list', '--json']  # Command is the same for now
+            
+        result = subprocess.run(cmd, 
                               capture_output=True, 
                               text=True, 
                               check=True)
@@ -28,7 +37,7 @@ def get_filespace_info():
             filespace = filespaces[0]
             filespace_name = filespace['filespace'].replace('.', '-')
             port = filespace['port']
-            return filespace_name, port
+            return filespace_name, port, version
         else:
             # Multiple filespaces - prompt user to choose
             print("\nAvailable filespaces:")
@@ -44,7 +53,7 @@ def get_filespace_info():
                         selected = filespaces[choice_idx]
                         filespace_name = selected['filespace'].replace('.', '-')
                         port = selected['port']
-                        return filespace_name, port
+                        return filespace_name, port, version
                     else:
                         print("Invalid choice. Please enter a number between 1 and", len(filespaces))
                 except ValueError:
@@ -62,10 +71,16 @@ def get_filespace_info():
         sys.exit(1)
 
 def main():
-    filespace_name, port = get_filespace_info()
-    print(f"\nSelected filespace:")
+    parser = argparse.ArgumentParser(description='Get LucidLink filespace information')
+    parser.add_argument('--version', type=int, choices=[2, 3], default=3,
+                      help='LucidLink API version (2 or 3)')
+    args = parser.parse_args()
+    
+    filespace_name, port, version = get_filespace_info(args.version)
+    print("\nSelected filespace:")
     print(f"filespace-1: {filespace_name}")
     print(f"port: {port}")
+    print(f"version: {version}")
 
 if __name__ == "__main__":
     main()
