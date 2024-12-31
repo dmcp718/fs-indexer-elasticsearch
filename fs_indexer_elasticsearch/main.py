@@ -3,29 +3,29 @@
 import logging
 import logging.handlers
 import os
-from os import path
-import sys
-import time
-import argparse
-import yaml
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Generator
-from threading import Lock, Thread, Event
+from threading import Lock, Event
 from queue import Queue, Empty
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
-import duckdb
 import asyncio
-from fs_indexer_elasticsearch.db_duckdb import init_database, bulk_upsert_files, cleanup_missing_files, get_database_stats
-from fs_indexer_elasticsearch.lucidlink_api import LucidLinkAPI
-from fs_indexer_elasticsearch.elasticsearch_integration import ElasticsearchClient
-from fs_indexer_elasticsearch.filespace_prompt import get_filespace_info
-import urllib.parse
-import requests
-import pandas as pd
 import uuid
-import xxhash
+import time
+import sys
+import argparse
+from typing import Dict, List, Any, Optional, Generator
+
+import yaml
+import duckdb
+import pandas as pd
 from elasticsearch import helpers
+
+from .db_duckdb import (
+    init_database,
+    bulk_upsert_files,
+    cleanup_missing_files,
+)
+from .elasticsearch_integration import ElasticsearchClient
+from .lucidlink_api import LucidLinkAPI
+from .filespace_prompt import get_filespace_info
 
 # Initialize basic logging first
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ def configure_logging(config: Dict[str, Any]) -> None:
 def get_constants(config: Dict[str, Any]) -> Dict[str, Any]:
     """Get configuration constants."""
     return {
-        "BATCH_SIZE": config["batch_size"],
+        "BATCH_SIZE": config["performance"]["batch_size"],
         "READ_BUFFER_SIZE": config["read_buffer_size"]
     }
 
@@ -128,27 +128,61 @@ class WorkflowStats:
         self.errors = []
         self.total_size = 0  # Track total size in bytes
         self.lock = Lock()  # Add lock for thread safety
+        self._batch_size = 1000
+        self._batch = {
+            'files': 0,
+            'dirs': 0,
+            'updated': 0,
+            'skipped': 0,
+            'size': 0
+        }
         
+    def _flush_batch(self):
+        """Flush accumulated stats to main counters."""
+        if any(self._batch.values()):
+            with self.lock:
+                self.total_files += self._batch['files']
+                self.total_dirs += self._batch['dirs']
+                self.files_updated += self._batch['updated']
+                self.files_skipped += self._batch['skipped']
+                self.total_size += self._batch['size']
+            self._batch = {k: 0 for k in self._batch}
+
+    def update_stats(self, file_count=0, dir_count=0, updated=0, skipped=0, size=0):
+        """Batch update multiple stats at once."""
+        self._batch['files'] += file_count
+        self._batch['dirs'] += dir_count
+        self._batch['updated'] += updated
+        self._batch['skipped'] += skipped
+        self._batch['size'] += size
+        
+        if sum(self._batch.values()) >= self._batch_size:
+            self._flush_batch()
+            
     def add_error(self, error: str):
         """Add an error to the stats."""
-        self.errors.append(error)
-        
+        with self.lock:
+            self.errors.append(error)
+            
     def add_removed_files(self, count: int, paths: List[str]):
         """Add information about removed files."""
-        self.files_removed = count
-        self.removed_paths = paths
+        with self.lock:
+            self.files_removed = count
+            self.removed_paths = paths
         
     def finish(self):
         """Mark the workflow as finished and set end time."""
+        self._flush_batch()  # Ensure all stats are flushed
         self.end_time = time.time()
-        
+
 def should_skip_file(file_info: Dict[str, Any], skip_patterns: Dict[str, List[str]]) -> bool:
     """Check if a file should be skipped based on skip patterns."""
     filename = file_info['name'].split('/')[-1]
     full_path = file_info['name']  # Use full path from API
     
     # Debug logging
-    logger.debug(f"Checking skip patterns for: {full_path} (type: {file_info['type']})")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Checking skip patterns for: {full_path} (type: {file_info['type']})")
     
     # Check directory patterns first
     for dir_pattern in skip_patterns.get('directories', []):
@@ -158,7 +192,8 @@ def should_skip_file(file_info: Dict[str, Any], skip_patterns: Dict[str, List[st
         
         # Skip if path starts with or equals the pattern
         if clean_path.startswith(dir_pattern + '/') or clean_path == dir_pattern:
-            logger.debug(f"Skipping {full_path} due to directory pattern {dir_pattern}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Skipping {full_path} due to directory pattern {dir_pattern}")
             return True
     
     # Check file extensions
@@ -166,7 +201,8 @@ def should_skip_file(file_info: Dict[str, Any], skip_patterns: Dict[str, List[st
         # Remove leading dot if present in the extension pattern
         ext = ext.lstrip('.')
         if filename.endswith(f".{ext}") or filename == ext:
-            logger.debug(f"Skipping {full_path} due to extension pattern {ext}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Skipping {full_path} due to extension pattern {ext}")
             return True
     
     return False
@@ -246,7 +282,7 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
 
     # Process directories in parallel chunks
     chunk_size = config["scan_chunk_size"]
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with asyncio.ThreadPoolExecutor(max_workers=max_workers) as executor:
         while dirs_to_scan:
             # Take next chunk of directories
             chunk = dirs_to_scan[:chunk_size]
@@ -274,32 +310,33 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
             # Log progress
             scan_duration = time.time() - start_time
             scan_rate = scanned_files / scan_duration if scan_duration > 0 else 0
-            logger.info(f"Scanned {scanned_files} files so far ({scan_rate:.1f} files/s)")
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Scanned {scanned_files} files so far ({scan_rate:.1f} files/s)")
 
 def process_files_worker(queue: Queue, stop_event: Event, session: duckdb.DuckDBPyConnection, stats: WorkflowStats, config: Dict[str, Any]):
     """Worker thread to process files from queue."""
     files_chunk = []
-    chunk_size = config["batch_size"]
+    chunk_size = config["performance"]["batch_size"]
     chunk_start_time = time.time()
     
     while not stop_event.is_set() or not queue.empty():
         try:
             file_info = queue.get(timeout=1)  # 1 second timeout
             files_chunk.append(file_info)
-            with stats.lock:
-                stats.total_size += file_info["size"]  # Add file size to total
+            stats.update_stats(size=file_info["size"])
             
             # Process chunk when it reaches batch size
             if len(files_chunk) >= chunk_size:
                 try:
                     # Bulk upsert the chunk
                     processed = bulk_upsert_files(session, files_chunk)
-                    with stats.lock:
-                        stats.files_updated += processed
+                    stats.update_stats(updated=processed)
                     chunk_duration = time.time() - chunk_start_time
                     chunk_rate = processed / chunk_duration if chunk_duration > 0 else 0
-                    logger.info(f"Database batch: {processed} files committed")
-                    logger.info(f"Processed {stats.files_updated}/{stats.total_files} files ({chunk_rate:.1f} files/s in last chunk)")
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"Database batch: {processed} files committed")
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"Processed {stats.files_updated}/{stats.total_files} files ({chunk_rate:.1f} files/s in last chunk)")
                     
                     # Reset for next chunk
                     files_chunk = []
@@ -326,12 +363,13 @@ def process_files_worker(queue: Queue, stop_event: Event, session: duckdb.DuckDB
     if files_chunk:
         try:
             processed = bulk_upsert_files(session, files_chunk)
-            with stats.lock:
-                stats.files_updated += processed
+            stats.update_stats(updated=processed)
             chunk_duration = time.time() - chunk_start_time
             chunk_rate = processed / chunk_duration if chunk_duration > 0 else 0
-            logger.info(f"Database batch: {processed} files committed")
-            logger.info(f"Processed {stats.files_updated}/{stats.total_files} files ({chunk_rate:.1f} files/s in last chunk)")
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Database batch: {processed} files committed")
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Processed {stats.files_updated}/{stats.total_files} files ({chunk_rate:.1f} files/s in last chunk)")
         except Exception as e:
             logger.error(f"Error processing final chunk: {e}")
 
@@ -351,8 +389,7 @@ def process_files(session: duckdb.DuckDBPyConnection, files: List[Dict], stats: 
     """Process a list of files and update the database."""
     try:
         total_files = len(files)
-        with stats.lock:
-            stats.total_files = total_files
+        stats.update_stats(file_count=total_files)
         
         # Process files in batches
         total_processed = 0
@@ -360,27 +397,26 @@ def process_files(session: duckdb.DuckDBPyConnection, files: List[Dict], stats: 
         last_progress_time = start_time
         last_progress_count = 0
         
-        for i in range(0, len(files), config["batch_size"]):
-            batch = files[i:i + config["batch_size"]]
+        for i in range(0, len(files), config["performance"]["batch_size"]):
+            batch = files[i:i + config["performance"]["batch_size"]]
             processed = bulk_upsert_files(session, batch)
             total_processed += processed
-            with stats.lock:
-                stats.files_updated += processed
+            stats.update_stats(updated=processed)
             
             # Calculate and log processing rate
             current_time = time.time()
             elapsed = current_time - last_progress_time
             files_in_chunk = total_processed - last_progress_count
             rate = files_in_chunk / elapsed if elapsed > 0 else 0
-            logger.info(f"Processed {total_processed}/{total_files} files ({rate:.1f} files/s in last chunk)")
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Processed {total_processed}/{total_files} files ({rate:.1f} files/s in last chunk)")
             last_progress_time = current_time
             last_progress_count = total_processed
             
     except Exception as e:
         error_msg = f"Critical error in process_files: {str(e)}"
         logger.error(error_msg)
-        with stats.lock:
-            stats.add_error(error_msg)
+        stats.add_error(error_msg)
         raise
 
 def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowStats, config: Dict[str, Any], client: ElasticsearchClient) -> None:
@@ -394,23 +430,26 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
         max_workers = config.get('performance', {}).get('max_workers', 10)
         port = config.get('lucidlink_filespace', {}).get('port', 9778)
         
-        async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI) -> None:
+        async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI) -> int:
             """Process a batch of files by inserting them into DuckDB."""
             try:
-                # Generate direct links for files in parallel if not skipped
+                # Process batch
                 skip_direct_links = config.get('lucidlink_filespace', {}).get('skip_direct_links', False)
                 
                 if not skip_direct_links:
-                    direct_link_tasks = []
-                    logger.info(f"Processing batch of {len(batch)} items for direct links")
+                    # Process batch
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"Processing batch of {len(batch)} items for direct links")
                     for item in batch:
-                        logger.debug(f"Generating direct link for: {item['relative_path']}")
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"Generating direct link for: {item['relative_path']}")
                         task = lucidlink_api.get_direct_link(item['relative_path'])
                         direct_link_tasks.append(task)
                             
                     # Wait for all direct link generations
                     if direct_link_tasks:
-                        logger.info(f"Waiting for {len(direct_link_tasks)} direct link tasks")
+                        if logger.isEnabledFor(logging.INFO):
+                            logger.info(f"Waiting for {len(direct_link_tasks)} direct link tasks")
                         direct_links = await asyncio.gather(*direct_link_tasks, return_exceptions=True)
                         
                         # Add direct links to batch items
@@ -419,133 +458,139 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                                 logger.error(f"Failed to generate direct link for {item['relative_path']}: {direct_link}")
                                 item['direct_link'] = None
                             else:
-                                logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
+                                if logger.isEnabledFor(logging.DEBUG):
+                                    logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
                                 item['direct_link'] = direct_link
-                else:
-                    logger.debug("Skipping direct link generation (skip_direct_links is enabled)")
-                    for item in batch:
-                        item['direct_link'] = None
                 
                 processed = bulk_upsert_files(session, batch)
-                with stats.lock:
-                    stats.files_updated += processed
-                    
+                return processed
+                
             except Exception as e:
                 error_msg = f"Error processing batch: {str(e)}"
                 logger.error(error_msg)
-                with stats.lock:
-                    stats.add_error(error_msg)
-
+                stats.add_error(error_msg)
+                raise
+                
         async def process_files_async():
-            async with LucidLinkAPI(port=port, max_workers=max_workers) as lucidlink_api:
-                # Check API health first
-                if not await lucidlink_api.health_check():
-                    raise RuntimeError("LucidLink API is not available")
-                
-                logger.info("Starting filesystem traversal...")
-                
-                # Get full and relative root paths
-                full_root_path = config.get('root_path', '')
-                relative_root_path = str(Path(full_root_path).relative_to('/Volumes/dmpfs/production'))
-                logger.info(f"Full root path: {full_root_path}")
-                logger.info(f"Relative root path: {relative_root_path}")
-                
-                # Initialize variables for batch processing
-                batch = []
-                current_files = []  # Track current files for cleanup
-                files_in_batch = 0
-                skip_patterns = config.get('skip_patterns', {})
-                batch_size = config['performance']['batch_size']
-                
-                # Process files from LucidLink API using relative path
-                async for file_info in lucidlink_api.traverse_filesystem(relative_root_path):
-                    try:
-                        # Debug log the file_info
-                        logger.debug(f"Processing file_info: {file_info}")
-                        
-                        # Skip files based on patterns
-                        if should_skip_file(file_info, skip_patterns):
-                            with stats.lock:
-                                stats.files_skipped += 1
-                            continue
-                        
-                        # Add file to batch - ensure we have the required fields
-                        if 'name' not in file_info:
-                            logger.warning(f"Skipping file_info without name: {file_info}")
-                            continue
+            try:
+                async with LucidLinkAPI(port=port, max_workers=max_workers) as lucidlink_api:
+                    # Check API health first
+                    if not await lucidlink_api.health_check():
+                        raise RuntimeError("LucidLink API is not available")
+                    
+                    logger.info("Starting filesystem traversal...")
+                    
+                    # Get full and relative root paths
+                    full_root_path = config.get('root_path', '')
+                    relative_root_path = str(Path(full_root_path).relative_to('/Volumes/dmpfs/production'))
+                    logger.info(f"Full root path: {full_root_path}")
+                    logger.info(f"Relative root path: {relative_root_path}")
+                    
+                    # Initialize variables for batch processing
+                    batch_dirs = 0
+                    batch_files = 0
+                    batch_size = 0
+                    batch = []
+                    current_files = []  # Track all current files for cleanup
+                    files_in_batch = 0
+                    skip_patterns = config.get('skip_patterns', {})
+                    batch_size_limit = config['performance']['batch_size']
+                    
+                    # Process files from LucidLink API using relative path
+                    async for file_info in lucidlink_api.traverse_filesystem(relative_root_path):
+                        try:
+                            # Skip files based on patterns
+                            if should_skip_file(file_info, skip_patterns):
+                                stats.update_stats(skipped=1)
+                                continue
                             
-                        # Copy file_info to avoid modifying the original
-                        batch_item = file_info.copy()
-                        batch_item['relative_path'] = batch_item['name']
-                        batch_item['id'] = str(uuid.uuid5(NAMESPACE_DNS, batch_item['relative_path']))
-                        
-                        # Update stats
-                        with stats.lock:
-                            if batch_item['type'] == 'directory':
-                                stats.total_dirs += 1
-                            else:
-                                stats.total_files += 1
-                                stats.total_size += batch_item.get('size', 0)
-                        
-                        batch.append(batch_item)
-                        current_files.append({'id': batch_item['id'], 'relative_path': batch_item['relative_path']})
-                        files_in_batch += 1
-                        
-                        # Process batch if it reaches the size limit
-                        if files_in_batch >= batch_size:
-                            logger.info(f"Processing batch of {files_in_batch} items...")
-                            await process_batch(session, batch, stats, lucidlink_api)
-                            batch = []
-                            files_in_batch = 0
+                            # Copy file_info to avoid modifying the original
+                            file_info = file_info.copy()
                             
-                    except Exception as e:
-                        error_msg = f"Error processing file {file_info.get('name', 'unknown')}: {str(e)}"
-                        logger.error(error_msg)
-                        with stats.lock:
+                            # Set required fields
+                            file_info['relative_path'] = file_info['name']
+                            file_info['id'] = str(uuid.uuid5(NAMESPACE_DNS, file_info['relative_path']))
+                            
+                            # Initialize LucidLink fields
+                            file_info['lucidlink'] = {
+                                'direct_link': None,
+                                'filespace': config['lucidlink_filespace']['name'],
+                                'port': config['lucidlink_filespace']['port']
+                            }
+                            
+                            # Add to batch
+                            batch.append(file_info)
+                            batch_files += 1 if file_info["type"] == "file" else 0
+                            batch_dirs += 1 if file_info["type"] == "directory" else 0
+                            
+                            # Collect batch stats
+                            batch_size += file_info.get("size", 0)
+                            current_files.append({'id': file_info['id'], 'relative_path': file_info['relative_path']})
+                            files_in_batch += 1
+                            
+                            # Process batch if we've reached the batch size
+                            if files_in_batch >= batch_size_limit:
+                                if logger.isEnabledFor(logging.INFO):
+                                    logger.info(f"Processing batch of {len(batch)} items...")
+                                processed = await process_batch(session, batch, stats, lucidlink_api)
+                                stats.update_stats(updated=processed)
+                                
+                                # Update stats in one lock acquisition
+                                stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
+                                
+                                # Reset batch and stats
+                                batch = []
+                                files_in_batch = 0
+                                batch_dirs = 0
+                                batch_files = 0
+                                batch_size = 0
+                        except Exception as e:
+                            error_msg = f"Error processing file {file_info.get('name', 'unknown')}: {str(e)}"
+                            logger.error(error_msg)
                             stats.add_error(error_msg)
-                        continue
+                            continue
                 
                 # Process remaining files in the last batch
                 if files_in_batch > 0:
-                    logger.info(f"Processing batch of {files_in_batch} items...")
-                    await process_batch(session, batch, stats, lucidlink_api)
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"Processing batch of {files_in_batch} items...")
+                    processed = await process_batch(session, batch, stats, lucidlink_api)
+                    stats.update_stats(updated=processed)
+                    # Update final stats
+                    stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
                 
                 # Clean up items that no longer exist
-                logger.info("Cleaning up removed files...")
-                removed_files = cleanup_missing_files(session, current_files)
-                if removed_files and client is not None:
-                    removed_ids, removed_paths = zip(*removed_files)
-                    client.delete_by_ids(list(removed_ids))
-                if removed_files:
-                    # Split IDs and paths
-                    removed_ids, removed_paths = zip(*removed_files)
-                    with stats.lock:
-                        stats.files_removed = len(removed_files)
-                        stats.removed_paths = removed_paths
-                    logger.info(f"Removed {len(removed_files)} files from DuckDB")
-                    
+                if current_files:  # Only clean up if we have files to check against
+                    logger.info("Cleaning up removed files...")
+                    removed_files = cleanup_missing_files(session, current_files)
+                    if removed_files and client is not None:
+                        removed_ids, removed_paths = zip(*removed_files)
+                        client.delete_by_ids(list(removed_ids))
+                    if removed_files:
+                        # Split IDs and paths
+                        removed_ids, removed_paths = zip(*removed_files)
+                        stats.add_removed_files(len(removed_files), removed_paths)
+                        logger.info(f"Removed {len(removed_files)} files from DuckDB")
+            except Exception as e:
+                error_msg = f"Error in async file processing: {str(e)}"
+                logger.error(error_msg)
+                stats.add_error(error_msg)
+                raise
+        
         # Run the async function to complete DuckDB indexing
         asyncio.run(process_files_async())
         
     except Exception as e:
         error_msg = f"Error in LucidLink file processing: {str(e)}"
         logger.error(error_msg)
-        with stats.lock:
-            stats.add_error(error_msg)
+        stats.add_error(error_msg)
         raise
 
 def clean_elasticsearch_records(client: ElasticsearchClient, root_path: str) -> None:
     """Clean up Elasticsearch records under the given path"""
     try:
-        logger.info(f"Cleaning up Elasticsearch records under path: {root_path}")
-        query = {
-            "query": {
-                "prefix": {
-                    "path.keyword": root_path
-                }
-            }
-        }
-        client.delete_by_query(query)
+        logger.info("Cleaning up Elasticsearch records...")
+        clean_elasticsearch_records(client, root_path)
     except Exception as e:
         logger.error(f"Error cleaning up Elasticsearch records: {str(e)}")
         raise
@@ -601,11 +646,14 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
             return
             
         # Log sample of records for debugging
-        logger.info(f"Sample of first 5 records:")
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("Sample of first 5 records:")
         for _, row in result.head().iterrows():
-            logger.info(f"  {row['type']}: {row['filepath']}")
+            if logger.isEnabledFor(logging.INFO):
+                logger.info("  %s: %s" % (row['type'], row['filepath']))
             
-        logger.info(f"Preparing to index {total_docs:,} documents to Elasticsearch...")
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"Preparing to index {total_docs:,} documents to Elasticsearch...")
         
         # Convert DataFrame to list of dicts for bulk indexing
         docs = []
@@ -676,7 +724,8 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
                 
                 if failed_count > 0:
                     logger.warning(f"Batch indexing completed with errors - Success: {success_count:,}, Failed: {failed_count:,}")
-                logger.info(f"Progress: {progress:.1f}% ({total_indexed:,}/{total_docs:,}) - {docs_per_sec:.0f} docs/sec")
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"Progress: {progress:.1f}% ({total_indexed:,}/{total_docs:,}) - {docs_per_sec:.0f} docs/sec")
                 
             except Exception as e:
                 logger.error(f"Error indexing batch: {str(e)}")
@@ -685,8 +734,10 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
         # Log final statistics
         total_time = time.time() - start_time
         avg_rate = total_docs / total_time
-        logger.info(f"Elasticsearch indexing complete in {total_time:.1f}s ({avg_rate:.0f} docs/sec)")
-        logger.info(f"Total documents: {total_docs:,}, Success: {total_success:,}, Failed: {total_failed:,}")
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"Elasticsearch indexing complete in {total_time:.1f}s ({avg_rate:.0f} docs/sec)")
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"Total documents: {total_docs:,}, Success: {total_success:,}, Failed: {total_failed:,}")
                 
     except Exception as e:
         logger.error(f"Error sending data to Elasticsearch: {str(e)}")
