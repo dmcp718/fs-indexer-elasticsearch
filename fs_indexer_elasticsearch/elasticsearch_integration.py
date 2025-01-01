@@ -30,7 +30,7 @@ class ElasticsearchClient:
 
     def _create_index_mapping(self):
         """Create the index mapping for filesystem data."""
-        mapping = {
+        return {
             "settings": {
                 "number_of_shards": 1,
                 "number_of_replicas": 0,
@@ -48,25 +48,29 @@ class ElasticsearchClient:
                             "pattern": "[/\\\\_\\.\\s]"
                         }
                     }
+                },
+                "mapping": {
+                    "total_fields": {
+                        "limit": 2000
+                    }
                 }
             },
             "mappings": {
                 "properties": {
-                    "filepath": {
+                    "name": {
                         "type": "text",
                         "analyzer": "path_analyzer",
                         "fields": {
                             "keyword": {
                                 "type": "keyword",
-                                "ignore_above": 2048
+                                "ignore_above": 256
                             }
                         }
                     },
-                    "fsEntryId": {
-                        "type": "keyword",
-                        "ignore_above": 512
+                    "extension": {
+                        "type": "keyword"
                     },
-                    "name": {
+                    "filepath": {
                         "type": "text",
                         "analyzer": "path_analyzer",
                         "fields": {
@@ -76,22 +80,39 @@ class ElasticsearchClient:
                             }
                         }
                     },
-                    "extension": {"type": "keyword"},
-                    "size_bytes": {"type": "long"},
-                    "size": {"type": "keyword"},
-                    "type": {"type": "keyword"},
-                    "checksum": {"type": "keyword", "null_value": "NULL"},
-                    "modified_time": {"type": "date"},
-                    "creation_time": {"type": "date"},
+                    "fsEntryId": {
+                        "type": "keyword"
+                    },
+                    "size_bytes": {
+                        "type": "long"  # Use long to handle large directory sizes
+                    },
+                    "size": {
+                        "type": "keyword"
+                    },
+                    "type": {
+                        "type": "keyword"
+                    },
+                    "checksum": {
+                        "type": "keyword",
+                        "null_value": "NULL"
+                    },
+                    "creation_time": {
+                        "type": "date"
+                    },
+                    "modified_time": {
+                        "type": "date"
+                    },
+                    "direct_link": {
+                        "type": "keyword",
+                        "null_value": "NULL"
+                    },
                     "indexed_time": {
                         "type": "date",
                         "format": "strict_date_optional_time||epoch_millis"
-                    },
-                    "direct_link": {"type": "keyword", "null_value": "NULL"}
+                    }
                 }
             }
         }
-        return mapping
 
     def send_data(self, data: list):
         try:
@@ -188,4 +209,30 @@ class ElasticsearchClient:
             }
         except Exception as e:
             logging.error(f"Failed to get stats from Elasticsearch: {e}")
+            raise
+
+    def bulk_index(self, docs: List[Dict[str, Any]]) -> None:
+        """Bulk index documents into Elasticsearch.
+        
+        Args:
+            docs: List of documents to index
+        """
+        if not docs:
+            return
+            
+        try:
+            # Bulk index
+            success, failed = helpers.bulk(
+                client=self.client,
+                actions=docs,
+                refresh=True,
+                request_timeout=300,
+                raise_on_error=False,
+                stats_only=True
+            )
+            
+            logging.info(f"Indexed {success} documents, {failed} failed")
+                    
+        except Exception as e:
+            logging.error(f"Error in bulk_index: {str(e)}")
             raise

@@ -133,14 +133,14 @@ skip_patterns:
     - .hg
     - .idea
     - __pycache__
-    - *.pyc
-    - *.pyo
-    - *.pyd
-    - *.so
-    - *.dylib
-    - *.dll
-    - *.class
-    - *.o
+    - '*.pyc'
+    - '*.pyo'
+    - '*.pyd'
+    - '*.so'
+    - '*.dylib'
+    - '*.dll'
+    - '*.class'
+    - '*.o'
   
   directories:
     - .git
@@ -148,5 +148,5 @@ skip_patterns:
     - env
     - .env
     - .lucid_audit
-    - .Trash*
-    - .Spotlight*
+    - '.Trash*'
+    - '.Spotlight*'

@@ -28,13 +28,13 @@ class DirectorySizeCalculator:
         """
         if not items:
             return {}
-            
+        
         try:
-            # Extract directory paths
-            dir_paths = [item['name'] for item in items if item['type'] == 'directory']
+            # Extract directory paths using relative_path instead of name
+            dir_paths = [item['relative_path'] for item in items if item['type'] == 'directory']
             if not dir_paths:
                 return {}
-                
+            
             # Use a single query to calculate sizes for all directories
             query = """
                 WITH RECURSIVE
@@ -45,7 +45,7 @@ class DirectorySizeCalculator:
                 directory_sizes AS (
                     SELECT 
                         d.path,
-                        COALESCE(SUM(f.size), 0) as total_size
+                        COALESCE(SUM(CASE WHEN f.type = 'file' THEN f.size ELSE 0 END), 0) as total_size
                     FROM directory_paths d
                     LEFT JOIN lucidlink_files f ON (
                         -- Match files directly in this directory or in subdirectories
@@ -53,7 +53,6 @@ class DirectorySizeCalculator:
                         -- Match files that are the directory itself (for empty dirs)
                         OR f.relative_path = d.path
                     )
-                    WHERE f.type = 'file'  -- Only sum file sizes
                     GROUP BY d.path
                 )
                 SELECT path, total_size
@@ -62,7 +61,9 @@ class DirectorySizeCalculator:
             
             # Execute query and collect results
             result = self.session.execute(query, [dir_paths]).fetchall()
-            return {path: size for path, size in result}
+            sizes = {path: size for path, size in result}
+            
+            return sizes
             
         except Exception as e:
             logger.error(f"Error calculating directory sizes: {str(e)}")
@@ -81,7 +82,8 @@ class DirectorySizeCalculator:
             # Update directory items with their sizes
             for item in items:
                 if item['type'] == 'directory':
-                    size = sizes.get(item['name'], 0)
+                    # Use relative_path to look up size
+                    size = sizes.get(item['relative_path'], 0)
                     item['size'] = size
                     
         except Exception as e:

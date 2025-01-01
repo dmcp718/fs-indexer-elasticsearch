@@ -98,7 +98,7 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
                 'name': f['name'],
                 'relative_path': f['relative_path'],
                 'type': f['type'],
-                'size': f['size'],
+                'size': f.get('size', 0),  # Ensure size is never NULL
                 'creation_time': f.get('creation_time', now),
                 'update_time': f.get('update_time', now),
                 'direct_link': f.get('direct_link', None),
@@ -136,6 +136,17 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
         except Exception as e:
             cursor.execute("ROLLBACK")
             raise
+        
+        # Log sample of data after upsert
+        logger.debug("Sample of data after upsert:")
+        result = cursor.execute("""
+            SELECT type, relative_path, size 
+            FROM lucidlink_files 
+            WHERE type = 'directory'
+            LIMIT 5;
+        """).fetchall()
+        for row in result:
+            logger.debug(f"Directory in main: {row[1]} (size: {row[2]} bytes)")
         
         return len(files_batch)
         
