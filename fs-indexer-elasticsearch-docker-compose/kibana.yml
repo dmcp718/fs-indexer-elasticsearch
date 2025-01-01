@@ -1,0 +1,14 @@
+# kibana.yml
+server.name: kibana
+server.host: "0.0.0.0"
+elasticsearch.hosts: [ "http://elasticsearch:9200" ]
+monitoring.ui.container.elasticsearch.enabled: true
+
+# Force Kibana to start in Dark Mode for all users
+uiSettings:
+  overrides:
+    "theme:darkMode": true
+
+# Enable saving to .kibana index
+xpack.security.enabled: false
+elasticsearch.saveObjects: true
