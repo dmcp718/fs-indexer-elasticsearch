@@ -126,21 +126,21 @@ check_missing_files: true
 # Skip patterns for file extensions and specific files
 skip_patterns:
   extensions:
-    - ".DS_Store"
-    - ".git"
-    - ".gitignore"
-    - ".svn"
-    - ".hg"
-    - ".idea"
-    - "__pycache__"
-    - "*.pyc"
-    - "*.pyo"
-    - "*.pyd"
-    - "*.so"
-    - "*.dylib"
-    - "*.dll"
-    - "*.class"
-    - "*.o"
+    - .DS_Store
+    - .git
+    - .gitignore
+    - .svn
+    - .hg
+    - .idea
+    - __pycache__
+    - *.pyc
+    - *.pyo
+    - *.pyd
+    - *.so
+    - *.dylib
+    - *.dll
+    - *.class
+    - *.o
   
   directories:
     - .git
@@ -148,5 +148,6 @@ skip_patterns:
     - env
     - .env
     - .lucid_audit
-    - .Trash*
-    - .Spotlight*
+    - .Trashes
+    - .Trash
+    - .Spotlight-V100
