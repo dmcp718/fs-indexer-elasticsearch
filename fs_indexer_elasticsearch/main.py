@@ -209,8 +209,8 @@ def should_skip_file(file_info: Dict[str, Any], skip_patterns: Dict[str, List[st
         dir_pattern = dir_pattern.strip('/')
         clean_path = full_path.strip('/')
         
-        # Support glob patterns for directories
-        if fnmatch.fnmatch(clean_path, dir_pattern) or fnmatch.fnmatch(clean_path, f"*/{dir_pattern}/*") or fnmatch.fnmatch(clean_path, f"*/{dir_pattern}"):
+        # Skip if path starts with or equals the pattern
+        if clean_path.startswith(dir_pattern + '/') or clean_path == dir_pattern:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Skipping {full_path} due to directory pattern {dir_pattern}")
             return True

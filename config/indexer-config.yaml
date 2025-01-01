@@ -141,7 +141,6 @@ skip_patterns:
     - "*.dll"
     - "*.class"
     - "*.o"
-    - "*.obj"
   
   directories:
     - .git
@@ -149,3 +148,5 @@ skip_patterns:
     - env
     - .env
     - .lucid_audit
+    - .Trash*
+    - .Spotlight*
