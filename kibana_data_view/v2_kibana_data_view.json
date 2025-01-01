@@ -1,0 +1,246 @@
+{
+    "data_view": {
+        "id": "504363f3-0815-42ba-99ff-0b7481811a6e",
+        "type": "index-pattern",
+        "attributes": {
+            "title": "filespace-production-cloudstream",
+            "timeFieldName": "",
+            "version": "WzI4LDFd",
+            "sourceFilters": [],
+            "fieldFormats": {
+                "direct_link": {
+                    "id": "string"
+                }
+            },
+            "runtimeFieldMap": {},
+            "fieldAttrs": {
+                "direct_link": {
+                    "count": 1
+                },
+                "name": {
+                    "count": 1
+                },
+                "creation_time": {
+                    "count": 1
+                },
+                "modified_time": {
+                    "count": 1
+                },
+                "size": {
+                    "count": 1
+                },
+                "extension": {
+                    "count": 1
+                },
+                "filepath": {
+                    "count": 1
+                },
+                "type": {
+                    "count": 1
+                },
+                "fsEntryId": {
+                    "count": 1
+                }
+            },
+            "fields": {
+                "_id": {
+                    "count": 0,
+                    "name": "_id",
+                    "type": "string",
+                    "esTypes": ["_id"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": false,
+                    "readFromDocValues": false
+                },
+                "_index": {
+                    "count": 0,
+                    "name": "_index",
+                    "type": "string",
+                    "esTypes": ["_index"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": false
+                },
+                "_score": {
+                    "count": 0,
+                    "name": "_score",
+                    "type": "number",
+                    "scripted": false,
+                    "searchable": false,
+                    "aggregatable": false,
+                    "readFromDocValues": false
+                },
+                "_source": {
+                    "count": 0,
+                    "name": "_source",
+                    "type": "_source",
+                    "esTypes": ["_source"],
+                    "scripted": false,
+                    "searchable": false,
+                    "aggregatable": false,
+                    "readFromDocValues": false
+                },
+                "checksum": {
+                    "count": 0,
+                    "name": "checksum",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "creation_time": {
+                    "count": 0,
+                    "name": "creation_time",
+                    "type": "date",
+                    "esTypes": ["date"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "direct_link": {
+                    "count": 0,
+                    "name": "direct_link",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "extension": {
+                    "count": 0,
+                    "name": "extension",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "filepath": {
+                    "count": 0,
+                    "name": "filepath",
+                    "type": "string",
+                    "esTypes": ["text"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": false,
+                    "readFromDocValues": false
+                },
+                "filepath.keyword": {
+                    "count": 0,
+                    "name": "filepath.keyword",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true,
+                    "subType": {
+                        "multi": {
+                            "parent": "filepath"
+                        }
+                    }
+                },
+                "fsEntryId": {
+                    "count": 0,
+                    "name": "fsEntryId",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "indexed_time": {
+                    "count": 0,
+                    "name": "indexed_time",
+                    "type": "date",
+                    "esTypes": ["date"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "modified_time": {
+                    "count": 0,
+                    "name": "modified_time",
+                    "type": "date",
+                    "esTypes": ["date"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "name": {
+                    "count": 0,
+                    "name": "name",
+                    "type": "string",
+                    "esTypes": ["text"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": false,
+                    "readFromDocValues": false
+                },
+                "name.keyword": {
+                    "count": 0,
+                    "name": "name.keyword",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true,
+                    "subType": {
+                        "multi": {
+                            "parent": "name"
+                        }
+                    }
+                },
+                "size": {
+                    "count": 0,
+                    "name": "size",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "size_bytes": {
+                    "count": 0,
+                    "name": "size_bytes",
+                    "type": "number",
+                    "esTypes": ["long"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                },
+                "type": {
+                    "count": 0,
+                    "name": "type",
+                    "type": "string",
+                    "esTypes": ["keyword"],
+                    "scripted": false,
+                    "searchable": true,
+                    "aggregatable": true,
+                    "readFromDocValues": true
+                }
+            },
+            "allowNoIndex": false,
+            "name": "filespace-production-cloudstream",
+            "allowHidden": false,
+            "namespaces": ["default"]
+        },
+        "references": [],
+        "migrationVersion": {
+            "index-pattern": "8.0.0"
+        }
+    }
+}

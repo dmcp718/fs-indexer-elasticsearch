@@ -22,7 +22,6 @@ import pandas as pd
 from elasticsearch import helpers
 import signal
 from fs_indexer_elasticsearch.directory_size import DirectorySizeCalculator
-
 from .db_duckdb import (
     init_database,
     bulk_upsert_files,
@@ -31,6 +30,7 @@ from .db_duckdb import (
 from .elasticsearch_integration import ElasticsearchClient
 from .lucidlink_api import LucidLinkAPI
 from .filespace_prompt import get_filespace_info
+from .kibana_data_views import KibanaDataViewManager
 
 # Initialize basic logging first
 logger = logging.getLogger(__name__)
@@ -956,6 +956,14 @@ def main():
             # Send data to Elasticsearch if in elasticsearch mode
             if config.get('mode', 'elasticsearch') == 'elasticsearch' and client is not None:
                 send_data_to_elasticsearch(session, config)
+                
+                # Setup Kibana data views after elasticsearch indexing
+                logger.info("Setting up Kibana data views...")
+                kibana_manager = KibanaDataViewManager(config)
+                if kibana_manager.setup_kibana_views():
+                    logger.info("Successfully created Kibana data views and saved layout")
+                else:
+                    logger.error("Failed to create Kibana data views")
             else:
                 logger.info("Skipping Elasticsearch indexing (index-only mode)")
                 
