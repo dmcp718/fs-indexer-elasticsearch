@@ -148,6 +148,5 @@ skip_patterns:
     - env
     - .env
     - .lucid_audit
-    - .Trashes
-    - .Trash
-    - .Spotlight-V100
+    - .Trash*
+    - .Spotlight*
