@@ -25,7 +25,7 @@ lucidlink_filespace:
   # Skip generating direct links for files (faster indexing)
   skip_direct_links: true
   # LucidLink API version (2 or 3)
-  lucidlink_version: 3
+  lucidlink_version: 2
 
 # =============================================
 
@@ -59,7 +59,7 @@ database:
     url: "duckdb:///data/fs_index.duckdb"
     options:
       memory_limit: "85%"
-      threads: 10
+      threads: 10 # Adjust for less than total number of CPU cores on host
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
       compression: "lz4"
@@ -69,7 +69,7 @@ database:
 # =============================================
 performance:
   # Database settings
-  batch_size: 200000  # Adjust for dataset size
+  batch_size: 500000  # Adjust for dataset size
   db_pool_size: 1
   db_max_overflow: 0
   read_buffer_size: 268435456
