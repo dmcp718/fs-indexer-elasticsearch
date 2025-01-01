@@ -356,7 +356,8 @@ class LucidLinkAPI:
 
             file_path = self._get_relative_path(file_path)  # Convert to relative path
             encoded_path = quote(file_path)
-            url = f"{self.base_url}/direct-link/{encoded_path}"
+            # Use v3 API format with query parameter
+            url = f"http://127.0.0.1:{self.port}/fsEntry/direct-link?path={encoded_path}"
             
             async with self._request_semaphore:
                 async with self.session.get(url) as response:
