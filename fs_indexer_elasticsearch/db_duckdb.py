@@ -46,6 +46,7 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS lucidlink_files (
             id VARCHAR NOT NULL,
+            fsentry_id VARCHAR,  
             name VARCHAR NOT NULL,
             relative_path VARCHAR NOT NULL,
             type VARCHAR NOT NULL,
@@ -93,6 +94,7 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
             chunk = files_batch[i:i + chunk_size]
             chunk_data = [{
                 'id': f['id'],
+                'fsentry_id': f.get('fsentry_id', None),
                 'name': f['name'],
                 'relative_path': f['relative_path'],
                 'type': f['type'],
@@ -109,6 +111,7 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
         # Convert to Arrow table with optimized schema
         table = pa.Table.from_pylist(processed_data, schema=pa.schema([
             ('id', pa.string()),
+            ('fsentry_id', pa.string()),
             ('name', pa.string()),
             ('relative_path', pa.string()),
             ('type', pa.string()),
@@ -256,7 +259,7 @@ def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
         columns = [row[0].lower() for row in result]
         
         # Check if relative_path and direct_link columns exist
-        return 'relative_path' not in columns or 'direct_link' not in columns
+        return 'relative_path' not in columns or 'direct_link' not in columns or 'fsentry_id' not in columns
         
     except Exception as e:
         logger.error(f"Error checking schema: {str(e)}")
@@ -280,6 +283,7 @@ def reset_database(conn: duckdb.DuckDBPyConnection) -> None:
         cursor.execute("""
             CREATE TABLE lucidlink_files (
                 id VARCHAR PRIMARY KEY,
+                fsentry_id VARCHAR,
                 name VARCHAR,
                 relative_path VARCHAR,
                 type VARCHAR,

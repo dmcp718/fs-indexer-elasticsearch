@@ -62,6 +62,10 @@ class ElasticsearchClient:
                             }
                         }
                     },
+                    "fsEntryId": {
+                        "type": "keyword",
+                        "ignore_above": 512
+                    },
                     "name": {
                         "type": "text",
                         "analyzer": "path_analyzer",
@@ -76,7 +80,6 @@ class ElasticsearchClient:
                     "size_bytes": {"type": "long"},
                     "size": {"type": "keyword"},
                     "type": {"type": "keyword"},
-                    "is_directory": {"type": "boolean"},
                     "checksum": {"type": "keyword", "null_value": "NULL"},
                     "modified_time": {"type": "date"},
                     "creation_time": {"type": "date"},

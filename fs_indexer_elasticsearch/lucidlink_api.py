@@ -102,7 +102,7 @@ class LucidLinkAPI:
                 item['creation_time'] = self._convert_timestamp(item['creationTime'])
                 item['update_time'] = self._convert_timestamp(item['updateTime'])
                 item['type'] = item.get('type', '').lower()
-                
+                item['fsentry_id'] = item.get('id')  # Store the LucidLink fsEntry ID
             # Cache the results
             self._dir_cache[directory] = (time.time(), time.time(), data)
             
@@ -302,13 +302,26 @@ class LucidLinkAPI:
         else:
             return await self.get_direct_link_v3(file_path)
             
-    async def get_direct_link_v2(self, file_path: str) -> Optional[str]:
-        """Get direct link for a file using v2 API endpoint"""
+    async def get_direct_link_v2(self, file_path: str, fsentry_id: str = None) -> Optional[str]:
+        """Get direct link for a file using v2 API endpoint
+        
+        Args:
+            file_path: Path to the file
+            fsentry_id: Optional DuckDB ID to use directly instead of making an API call
+        """
         try:
-            # Get relative path
+            if fsentry_id:
+                # Use provided fsentry_id directly - fast path
+                if not self.filespace:
+                    logger.error("Filespace name not set")
+                    return None
+                    
+                direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
+                logger.debug(f"Generated v2 direct link using provided ID for {file_path}: {direct_link}")
+                return direct_link
+                
+            # Fallback to API call if no ID provided - slow path
             file_path = self._get_relative_path(file_path)
-            
-            # URL encode the file path
             encoded_path = quote(file_path)
             
             # Get the fsEntry ID from the API
@@ -328,7 +341,7 @@ class LucidLinkAPI:
                     return None
                     
                 direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
-                logger.debug(f"Generated v2 direct link for {file_path}: {direct_link}")
+                logger.debug(f"Generated v2 direct link via API for {file_path}: {direct_link}")
                 return direct_link
                 
         except Exception as e:

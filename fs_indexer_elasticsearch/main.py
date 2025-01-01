@@ -489,7 +489,11 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                         try:
                             if logger.isEnabledFor(logging.DEBUG):
                                 logger.debug(f"Generating direct link for: {item['relative_path']}")
-                            direct_link = await lucidlink_api.get_direct_link(item['relative_path'])
+                            # Use the LucidLink fsEntry ID directly for v2 direct links
+                            if lucidlink_api.version == 2:
+                                direct_link = await lucidlink_api.get_direct_link_v2(item['relative_path'], fsentry_id=item.get('fsentry_id'))
+                            else:
+                                direct_link = await lucidlink_api.get_direct_link_v3(item['relative_path'])
                             if direct_link:
                                 if logger.isEnabledFor(logging.DEBUG):
                                     logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
@@ -546,66 +550,77 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                     skip_patterns = config.get('skip_patterns', {})
                     batch_size_limit = config['performance']['batch_size']
                     
-                    # Process files from LucidLink API using relative path
-                    async for item in lucidlink_api.traverse_filesystem(relative_root_path):
-                        # Check for shutdown request
-                        if shutdown_requested:
-                            logger.info("Gracefully stopping directory scan...")
-                            # Process any remaining items in the batch
-                            if batch:
-                                await process_batch(session, batch, stats, lucidlink_api)
-                            break
-
-                        # Skip files based on patterns
-                        if should_skip_file(item, skip_patterns):
-                            stats.update_stats(skipped=1)
-                            continue
-                        
-                        # Copy file_info to avoid modifying the original
-                        item = item.copy()
-                        
-                        # Set required fields
-                        item['relative_path'] = item['name']
-                        item['name'] = os.path.basename(item['name'])
-                        item['id'] = str(uuid.uuid5(NAMESPACE_DNS, item['relative_path']))
-                        
-                        # Add to batch
-                        batch.append(item)
-                        batch_files += 1 if item["type"] == "file" else 0
-                        batch_dirs += 1 if item["type"] == "directory" else 0
-                        
-                        # Collect batch stats
-                        batch_size += item.get("size", 0)
-                        current_files.append({'id': item['id'], 'relative_path': item['relative_path']})
-                        files_in_batch += 1
-                        
-                        # Process batch if it reaches the size limit
-                        if files_in_batch >= batch_size_limit:
-                            if logger.isEnabledFor(logging.INFO):
-                                logger.info(f"Processing batch of {files_in_batch} items...")
-                            processed = await process_batch(session, batch, stats, lucidlink_api)
-                            stats.update_stats(updated=processed)
-                            # Update final stats
-                            stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
+                    try:
+                        # Process files from LucidLink API using relative path
+                        async for item in lucidlink_api.traverse_filesystem(relative_root_path):
+                            # Check for shutdown request frequently
+                            if shutdown_requested:
+                                logger.info("Gracefully stopping directory scan...")
+                                # Process any remaining items in the batch
+                                if batch:
+                                    await process_batch(session, batch, stats, lucidlink_api)
+                                return  # Exit cleanly
+                                
+                            # Skip files based on patterns
+                            if should_skip_file(item, skip_patterns):
+                                stats.update_stats(skipped=1)
+                                continue
                             
-                            # Reset batch
-                            batch = []
-                            files_in_batch = 0
-                            batch_dirs = 0
-                            batch_files = 0
-                            batch_size = 0
-                
+                            # Copy file_info to avoid modifying the original
+                            item = item.copy()
+                            
+                            # Set required fields
+                            item['relative_path'] = item['name']
+                            item['name'] = os.path.basename(item['name'])
+                            item['id'] = str(uuid.uuid5(NAMESPACE_DNS, item['relative_path']))
+                            
+                            # Add to batch
+                            batch.append(item)
+                            batch_files += 1 if item["type"] == "file" else 0
+                            batch_dirs += 1 if item["type"] == "directory" else 0
+                            
+                            # Collect batch stats
+                            batch_size += item.get("size", 0)
+                            current_files.append({'id': item['id'], 'relative_path': item['relative_path']})
+                            files_in_batch += 1
+                            
+                            # Process batch if it reaches the size limit
+                            if files_in_batch >= batch_size_limit:
+                                if logger.isEnabledFor(logging.INFO):
+                                    logger.info(f"Processing batch of {files_in_batch} items...")
+                                processed = await process_batch(session, batch, stats, lucidlink_api)
+                                stats.update_stats(updated=processed)
+                                # Update final stats
+                                stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
+                                
+                                # Reset batch
+                                batch = []
+                                files_in_batch = 0
+                                batch_dirs = 0
+                                batch_files = 0
+                                batch_size = 0
+                                
+                                # Check for shutdown after each batch
+                                if shutdown_requested:
+                                    logger.info("Gracefully stopping after batch completion...")
+                                    return
+                    except asyncio.CancelledError:
+                        logger.info("Operation cancelled, cleaning up...")
+                        if batch:
+                            await process_batch(session, batch, stats, lucidlink_api)
+                        raise
+                    
                     # Process remaining files in the last batch
-                    if files_in_batch > 0:
+                    if files_in_batch > 0 and not shutdown_requested:
                         if logger.isEnabledFor(logging.INFO):
-                            logger.info(f"Processing batch of {files_in_batch} items...")
+                            logger.info(f"Processing final batch of {files_in_batch} items...")
                         processed = await process_batch(session, batch, stats, lucidlink_api)
                         stats.update_stats(updated=processed)
                         # Update final stats
                         stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
-                
+                    
                     # Clean up items that no longer exist
-                    if current_files:  # Only clean up if we have files to check against
+                    if current_files and not shutdown_requested:
                         logger.info("Cleaning up removed files...")
                         removed_files = cleanup_missing_files(session, current_files)
                         if removed_files and client is not None:
@@ -616,7 +631,6 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                             removed_ids, removed_paths = zip(*removed_files)
                             stats.add_removed_files(len(removed_files), removed_paths)
                             logger.info(f"Removed {len(removed_files)} files from DuckDB")
-
             except Exception as e:
                 error_msg = f"Error in async file processing: {str(e)}"
                 logger.error(error_msg)
@@ -681,7 +695,8 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
                CASE WHEN type = 'directory' THEN true ELSE false END as is_directory,
                NULL as checksum,  -- Checksum not available in table
                '.' as root_path,
-               direct_link
+               direct_link,
+               fsentry_id
         FROM lucidlink_files
         WHERE indexed_at >= (
             SELECT MAX(indexed_at) - INTERVAL 1 MINUTE
@@ -721,6 +736,7 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
                     "name": row['name'],
                     "extension": Path(row['filepath']).suffix.lstrip('.'),
                     "filepath": row['filepath'],
+                    "fsEntryId": row['fsentry_id'],  # Use LucidLink fsEntry ID
                     "size_bytes": int(size),
                     "size": format_size(int(size)),
                     "type": row['type'],
