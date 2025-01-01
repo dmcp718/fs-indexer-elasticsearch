@@ -26,8 +26,10 @@ lucidlink_filespace:
   skip_direct_links: false
   # LucidLink filespace version (2 or 3)
   lucidlink_version: 2
+  # LucidLink port
+  port: 9778
   # Calculate directory sizes (may slow down processing)
-  calculate_directory_sizes: false
+  calculate_directory_sizes: true
 
 # =============================================
 

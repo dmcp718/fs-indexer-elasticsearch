@@ -24,6 +24,9 @@ wheels/
 logs/
 *.log
 
+# Samples
+kibana_data_view
+
 # Data
 data/
 *.db
