@@ -13,19 +13,22 @@ logger = logging.getLogger(__name__)
 class LucidLinkAPI:
     """Handler for LucidLink Filespace API interactions"""
     
-    def __init__(self, port: int, mount_point: str, max_workers: int = 10):
+    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None):
         """Initialize the API handler with the filespace port and mount point"""
         self.base_url = f"http://127.0.0.1:{port}/files"
         self.mount_point = mount_point
-        self.max_workers = max_workers
+        self.port = port
+        self._request_semaphore = None
         self.session = None
-        self._seen_paths = set()  # Track seen paths to avoid duplicates
-        self._dir_cache = {}  # Cache for directory contents
-        self._cache_ttl = 300  # Cache TTL in seconds
-        self._request_semaphore = None  # For rate limiting
+        self._max_workers = max_workers
         self._max_concurrent_requests = 20  # Increased for directory-heavy structure
         self._retry_attempts = 3
         self._retry_delay = 1  # seconds
+        self.version = version
+        self._filespace = filespace  # Store raw filespace name
+        self._seen_paths = set()  # Track seen paths to avoid duplicates
+        self._dir_cache = {}  # Cache for directory contents
+        self._cache_ttl = 300  # Cache TTL in seconds
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -293,7 +296,47 @@ class LucidLinkAPI:
             return False
             
     async def get_direct_link(self, file_path: str) -> Optional[str]:
-        """Get a direct link for a file"""
+        """Get direct link for a file based on the configured version"""
+        if self.version == 2:
+            return await self.get_direct_link_v2(file_path)
+        else:
+            return await self.get_direct_link_v3(file_path)
+            
+    async def get_direct_link_v2(self, file_path: str) -> Optional[str]:
+        """Get direct link for a file using v2 API endpoint"""
+        try:
+            # Get relative path
+            file_path = self._get_relative_path(file_path)
+            
+            # URL encode the file path
+            encoded_path = quote(file_path)
+            
+            # Get the fsEntry ID from the API
+            url = f"http://127.0.0.1:{self.port}/fsEntry?path={encoded_path}"
+            async with self.session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                if not data or 'id' not in data:
+                    logger.error(f"Failed to get fsEntry ID for {file_path}")
+                    return None
+                    
+                # Construct the direct link using the fsEntry ID
+                fsentry_id = data['id']
+                if not self.filespace:
+                    logger.error("Filespace name not set")
+                    return None
+                    
+                direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
+                logger.debug(f"Generated v2 direct link for {file_path}: {direct_link}")
+                return direct_link
+                
+        except Exception as e:
+            logger.error(f"Error generating v2 direct link for {file_path}: {e}")
+            return None
+
+    async def get_direct_link_v3(self, file_path: str) -> Optional[str]:
+        """Get direct link for a file using v3 API endpoint"""
         try:
             if not self.session:
                 raise RuntimeError("Session not initialized")
@@ -359,6 +402,16 @@ class LucidLinkAPI:
         except Exception as e:
             logger.error(f"Error scanning directory {path}: {str(e)}")
             return []
+
+    @property
+    def filespace(self) -> Optional[str]:
+        """Get the filespace name"""
+        return self._filespace
+
+    @filespace.setter
+    def filespace(self, value: str):
+        """Set the filespace name"""
+        self._filespace = value
 
     def get_all_files(self) -> List[Dict[str, Any]]:
         """Get all files and directories that were traversed"""

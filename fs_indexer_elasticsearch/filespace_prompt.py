@@ -64,7 +64,11 @@ def get_lucidlink_mount(lucidlink_bin, instance_id):
 def get_filespace_info(config=None, version=None):
     """
     Run lucidlink list command and process the output to get filespace info.
-    Returns tuple of (filespace_name, port, mount_point) where filespace_name has '.' replaced with '-'
+    Returns tuple of (filespace_raw, filespace_name, port, mount_point) where:
+    - filespace_raw: Original filespace name with dots
+    - filespace_name: Filespace name with dots replaced by dashes
+    - port: Port number
+    - mount_point: Mount point path
     
     Args:
         config (dict): Configuration dictionary (optional)
@@ -97,13 +101,14 @@ def get_filespace_info(config=None, version=None):
         # 4. Handle single filespace case
         if len(filespaces) == 1:
             filespace = filespaces[0]
-            filespace_name = filespace['filespace'].replace('.', '-')
+            filespace_raw = filespace['filespace']  # Keep original with dots
+            filespace_name = filespace_raw.replace('.', '-')  # Replace dots with dashes
             port = filespace['port']
             instance_id = filespace['instanceId']  
             # 4.5 Get mount point
             mount_point = get_lucidlink_mount(lucidlink_bin, instance_id)
             # 5. Return values
-            return filespace_name, port, mount_point
+            return filespace_raw, filespace_name, port, mount_point
         else:
             # 6. Handle multiple filespaces
             print("\nAvailable filespaces:")
@@ -118,11 +123,12 @@ def get_filespace_info(config=None, version=None):
                     if 0 <= choice_idx < len(filespaces):
                         # 7. Process user choice
                         selected = filespaces[choice_idx]
-                        filespace_name = selected['filespace'].replace('.', '-')
+                        filespace_raw = selected['filespace']  # Keep original with dots
+                        filespace_name = filespace_raw.replace('.', '-')  # Replace dots with dashes
                         port = selected['port']
                         instance_id = selected['instanceId']  
                         mount_point = get_lucidlink_mount(lucidlink_bin, instance_id)
-                        return filespace_name, port, mount_point
+                        return filespace_raw, filespace_name, port, mount_point
                     else:
                         print("Invalid choice. Please enter a number between 1 and", len(filespaces))
                 except ValueError:
@@ -149,8 +155,9 @@ def main():
     
     try:
         config = load_config(args.config) if not args.version else None
-        filespace_name, port, mount_point = get_filespace_info(config, args.version)
+        filespace_raw, filespace_name, port, mount_point = get_filespace_info(config, args.version)
         print("\nSelected filespace:")
+        print(f"filespace: {filespace_raw}")
         print(f"filespace-1: {filespace_name}")
         print(f"port: {port}")
         print(f"mount-point: {mount_point}")

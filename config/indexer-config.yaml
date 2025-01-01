@@ -23,7 +23,7 @@
 lucidlink_filespace:
   enabled: true
   # Skip generating direct links for files (faster indexing)
-  skip_direct_links: true
+  skip_direct_links: false
   # LucidLink API version (2 or 3)
   lucidlink_version: 2
 
@@ -49,7 +49,7 @@ elasticsearch:
 # Available modes:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
-mode: index-only
+mode: elasticsearch
 
 # =============================================
 # Database configuration

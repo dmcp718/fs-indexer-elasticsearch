@@ -470,39 +470,36 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
         max_workers = config.get('performance', {}).get('max_workers', 10)
         port = config.get('lucidlink_filespace', {}).get('port', 9778)
         mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
+        filespace_raw = config.get('lucidlink_filespace', {}).get('filespace_raw', '')
 
         async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI) -> int:
             """Process a batch of files by inserting them into DuckDB."""
             try:
+                logger.info(f"Processing batch of {len(batch)} items...")
                 # Process batch
                 skip_direct_links = config.get('lucidlink_filespace', {}).get('skip_direct_links', False)
                 
                 if not skip_direct_links:
                     # Process batch
-                    direct_link_tasks = []  # Initialize the list
                     if logger.isEnabledFor(logging.INFO):
                         logger.info(f"Processing batch of {len(batch)} items for direct links")
+                    
+                    # Process direct links sequentially to avoid session issues
                     for item in batch:
-                        if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"Generating direct link for: {item['relative_path']}")
-                        task = lucidlink_api.get_direct_link(item['relative_path'])
-                        direct_link_tasks.append(task)
-                            
-                    # Wait for all direct link generations
-                    if direct_link_tasks:
-                        if logger.isEnabledFor(logging.INFO):
-                            logger.info(f"Waiting for {len(direct_link_tasks)} direct link tasks")
-                        direct_links = await asyncio.gather(*direct_link_tasks, return_exceptions=True)
-                        
-                        # Add direct links to batch items
-                        for i, (item, direct_link) in enumerate(zip(batch, direct_links)):
-                            if isinstance(direct_link, Exception):
-                                logger.error(f"Failed to generate direct link for {item['relative_path']}: {direct_link}")
-                                item['direct_link'] = None
-                            else:
+                        try:
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(f"Generating direct link for: {item['relative_path']}")
+                            direct_link = await lucidlink_api.get_direct_link(item['relative_path'])
+                            if direct_link:
                                 if logger.isEnabledFor(logging.DEBUG):
                                     logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
                                 item['direct_link'] = direct_link
+                            else:
+                                logger.warning(f"No direct link generated for {item['relative_path']}")
+                                item['direct_link'] = None
+                        except Exception as e:
+                            logger.error(f"Failed to generate direct link for {item['relative_path']}: {e}")
+                            item['direct_link'] = None
                 
                 processed = bulk_upsert_files(session, batch)
                 return processed
@@ -512,10 +509,11 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                 logger.error(error_msg)
                 stats.add_error(error_msg)
                 raise
-                
+
         async def process_files_async():
             try:
-                async with LucidLinkAPI(port=port, mount_point=mount_point, max_workers=max_workers) as lucidlink_api:
+                lucidlink_version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
+                async with LucidLinkAPI(port=port, mount_point=mount_point, version=lucidlink_version, filespace=filespace_raw) as lucidlink_api:
                     # Check API health first
                     if not await lucidlink_api.health_check():
                         raise RuntimeError("LucidLink API is not available")
@@ -570,13 +568,6 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                         item['relative_path'] = item['name']
                         item['id'] = str(uuid.uuid5(NAMESPACE_DNS, item['relative_path']))
                         
-                        # Initialize LucidLink fields
-                        item['lucidlink'] = {
-                            'direct_link': None,
-                            'filespace': config['lucidlink_filespace']['name'],
-                            'port': config['lucidlink_filespace']['port']
-                        }
-                        
                         # Add to batch
                         batch.append(item)
                         batch_files += 1 if item["type"] == "file" else 0
@@ -587,53 +578,58 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                         current_files.append({'id': item['id'], 'relative_path': item['relative_path']})
                         files_in_batch += 1
                         
-                        # Process batch if we've reached the batch size
+                        # Process batch if it reaches the size limit
                         if files_in_batch >= batch_size_limit:
                             if logger.isEnabledFor(logging.INFO):
-                                logger.info(f"Processing batch of {len(batch)} items...")
+                                logger.info(f"Processing batch of {files_in_batch} items...")
                             processed = await process_batch(session, batch, stats, lucidlink_api)
                             stats.update_stats(updated=processed)
-                            
-                            # Update stats in one lock acquisition
+                            # Update final stats
                             stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
                             
-                            # Reset batch and stats
+                            # Reset batch
                             batch = []
                             files_in_batch = 0
                             batch_dirs = 0
                             batch_files = 0
                             batch_size = 0
                 
-                # Process remaining files in the last batch
-                if files_in_batch > 0:
-                    if logger.isEnabledFor(logging.INFO):
-                        logger.info(f"Processing batch of {files_in_batch} items...")
-                    processed = await process_batch(session, batch, stats, lucidlink_api)
-                    stats.update_stats(updated=processed)
-                    # Update final stats
-                    stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
+                    # Process remaining files in the last batch
+                    if files_in_batch > 0:
+                        if logger.isEnabledFor(logging.INFO):
+                            logger.info(f"Processing batch of {files_in_batch} items...")
+                        processed = await process_batch(session, batch, stats, lucidlink_api)
+                        stats.update_stats(updated=processed)
+                        # Update final stats
+                        stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
                 
-                # Clean up items that no longer exist
-                if current_files:  # Only clean up if we have files to check against
-                    logger.info("Cleaning up removed files...")
-                    removed_files = cleanup_missing_files(session, current_files)
-                    if removed_files and client is not None:
-                        removed_ids, removed_paths = zip(*removed_files)
-                        client.delete_by_ids(list(removed_ids))
-                    if removed_files:
-                        # Split IDs and paths
-                        removed_ids, removed_paths = zip(*removed_files)
-                        stats.add_removed_files(len(removed_files), removed_paths)
-                        logger.info(f"Removed {len(removed_files)} files from DuckDB")
+                    # Clean up items that no longer exist
+                    if current_files:  # Only clean up if we have files to check against
+                        logger.info("Cleaning up removed files...")
+                        removed_files = cleanup_missing_files(session, current_files)
+                        if removed_files and client is not None:
+                            removed_ids, removed_paths = zip(*removed_files)
+                            client.delete_by_ids(list(removed_ids))
+                        if removed_files:
+                            # Split IDs and paths
+                            removed_ids, removed_paths = zip(*removed_files)
+                            stats.add_removed_files(len(removed_files), removed_paths)
+                            logger.info(f"Removed {len(removed_files)} files from DuckDB")
+
             except Exception as e:
                 error_msg = f"Error in async file processing: {str(e)}"
                 logger.error(error_msg)
                 stats.add_error(error_msg)
                 raise
-        
-        # Run the async function to complete DuckDB indexing
-        asyncio.run(process_files_async())
-        
+
+        # Create a new event loop for the async processing
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(process_files_async())
+        finally:
+            loop.close()
+            
     except Exception as e:
         error_msg = f"Error in LucidLink file processing: {str(e)}"
         logger.error(error_msg)
@@ -883,12 +879,13 @@ def main():
         if config.get('lucidlink_filespace', {}).get('enabled', False):
             filespace_info = get_filespace_info(config)
             if filespace_info:
-                filespace_name, filespace_port, mount_point = filespace_info
+                filespace_raw, filespace_name, filespace_port, mount_point = filespace_info
                 logger.info(f"Using filespace '{filespace_name}' on port {filespace_port}")
                 logger.info(f"Mount point: {mount_point}")
                 config['lucidlink_filespace']['port'] = filespace_port
                 config['lucidlink_filespace']['name'] = filespace_name
                 config['lucidlink_filespace']['mount_point'] = mount_point
+                config['lucidlink_filespace']['filespace_raw'] = filespace_raw
                 # Update root_path if it's relative to mount point
                 if config.get('root_path', '').startswith(mount_point):
                     config['root_path'] = config['root_path']
