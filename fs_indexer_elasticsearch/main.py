@@ -21,6 +21,7 @@ import duckdb
 import pandas as pd
 from elasticsearch import helpers
 import signal
+from fs_indexer_elasticsearch.directory_size import DirectorySizeCalculator
 
 from .db_duckdb import (
     init_database,
@@ -478,34 +479,30 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
             """Process a batch of files by inserting them into DuckDB."""
             try:
                 logger.info(f"Processing batch of {len(batch)} items...")
-                # Process batch
-                skip_direct_links = config.get('lucidlink_filespace', {}).get('skip_direct_links', False)
+                # Calculate directory sizes
+                size_calculator = DirectorySizeCalculator(session)
+                size_calculator.update_directory_items(batch)
                 
-                if not skip_direct_links:
-                    # Process batch
-                    if logger.isEnabledFor(logging.INFO):
-                        logger.info(f"Processing batch of {len(batch)} items for direct links")
-                    
-                    # Process direct links sequentially to avoid session issues
-                    for item in batch:
-                        try:
+                # Process direct links sequentially to avoid session issues
+                for item in batch:
+                    try:
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"Generating direct link for: {item['relative_path']}")
+                        # Use the LucidLink fsEntry ID directly for v2 direct links
+                        if lucidlink_api.version == 2:
+                            direct_link = await lucidlink_api.get_direct_link_v2(item['relative_path'], fsentry_id=item.get('fsentry_id'))
+                        else:
+                            direct_link = await lucidlink_api.get_direct_link_v3(item['relative_path'])
+                        if direct_link:
                             if logger.isEnabledFor(logging.DEBUG):
-                                logger.debug(f"Generating direct link for: {item['relative_path']}")
-                            # Use the LucidLink fsEntry ID directly for v2 direct links
-                            if lucidlink_api.version == 2:
-                                direct_link = await lucidlink_api.get_direct_link_v2(item['relative_path'], fsentry_id=item.get('fsentry_id'))
-                            else:
-                                direct_link = await lucidlink_api.get_direct_link_v3(item['relative_path'])
-                            if direct_link:
-                                if logger.isEnabledFor(logging.DEBUG):
-                                    logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
-                                item['direct_link'] = direct_link
-                            else:
-                                logger.warning(f"No direct link generated for {item['relative_path']}")
-                                item['direct_link'] = None
-                        except Exception as e:
-                            logger.error(f"Failed to generate direct link for {item['relative_path']}: {e}")
+                                logger.debug(f"Got direct link for {item['relative_path']}: {direct_link}")
+                            item['direct_link'] = direct_link
+                        else:
+                            logger.warning(f"No direct link generated for {item['relative_path']}")
                             item['direct_link'] = None
+                    except Exception as e:
+                        logger.error(f"Failed to generate direct link for {item['relative_path']}: {e}")
+                        item['direct_link'] = None
                 
                 processed = bulk_upsert_files(session, batch)
                 return processed
