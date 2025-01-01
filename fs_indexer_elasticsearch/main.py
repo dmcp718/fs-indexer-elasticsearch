@@ -692,7 +692,6 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
                type,
                creation_time,
                update_time as modified_time,
-               CASE WHEN type = 'directory' THEN true ELSE false END as is_directory,
                NULL as checksum,  -- Checksum not available in table
                '.' as root_path,
                direct_link,
@@ -740,7 +739,6 @@ def send_data_to_elasticsearch(session: duckdb.DuckDBPyConnection, config: Dict[
                     "size_bytes": int(size),
                     "size": format_size(int(size)),
                     "type": row['type'],
-                    "is_directory": bool(row['is_directory']),
                     "checksum": row['checksum'] if pd.notnull(row['checksum']) else None,
                     "creation_time": row['creation_time'].isoformat() if pd.notnull(row['creation_time']) else None,
                     "modified_time": row['modified_time'].isoformat() if pd.notnull(row['modified_time']) else None,
