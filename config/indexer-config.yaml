@@ -24,10 +24,10 @@ lucidlink_filespace:
   enabled: true
   # Skip generating direct links for files (faster indexing)
   skip_direct_links: false
-  # LucidLink API version (2 or 3)
+  # LucidLink filespace version (2 or 3)
   lucidlink_version: 2
   # Calculate directory sizes (may slow down processing)
-  calculate_directory_sizes: true
+  calculate_directory_sizes: false
 
 # =============================================
 

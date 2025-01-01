@@ -69,22 +69,29 @@ class DirectorySizeCalculator:
             logger.error(f"Error calculating directory sizes: {str(e)}")
             return {}
             
-    def update_directory_items(self, items: List[Dict[str, Any]]) -> None:
+    def update_directory_items(self, items: List[Dict[str, Any]], calculate_sizes: bool = True) -> None:
         """Update directory items with their calculated sizes.
         
         Args:
             items: List of file/directory items to update
+            calculate_sizes: If False, sets directory sizes to None instead of calculating
         """
         try:
-            # Calculate sizes for all directories
-            sizes = self.calculate_directory_sizes(items)
-            
-            # Update directory items with their sizes
-            for item in items:
-                if item['type'] == 'directory':
-                    # Use relative_path to look up size
-                    size = sizes.get(item['relative_path'], 0)
-                    item['size'] = size
+            if calculate_sizes:
+                # Calculate sizes for all directories
+                sizes = self.calculate_directory_sizes(items)
+                
+                # Update directory items with their sizes
+                for item in items:
+                    if item['type'] == 'directory':
+                        # Use relative_path to look up size
+                        size = sizes.get(item['relative_path'], 0)
+                        item['size'] = size
+            else:
+                # Set directory sizes to None when calculation is disabled
+                for item in items:
+                    if item['type'] == 'directory':
+                        item['size'] = None
                     
         except Exception as e:
             logger.error(f"Error updating directory sizes: {str(e)}")

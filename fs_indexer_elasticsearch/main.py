@@ -480,15 +480,10 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
             try:
                 logger.info(f"Processing batch of {len(batch)} items...")
                 
-                # Calculate directory sizes if enabled
-                if config.get('lucidlink_filespace', {}).get('calculate_directory_sizes', True):
-                    size_calculator = DirectorySizeCalculator(session)
-                    size_calculator.update_directory_items(batch)
-                else:
-                    # Set directory sizes to 0 when calculation is disabled
-                    for item in batch:
-                        if item['type'] == 'directory':
-                            item['size'] = 0
+                # Handle directory sizes based on configuration
+                calculate_sizes = config.get('lucidlink_filespace', {}).get('calculate_directory_sizes', True)
+                size_calculator = DirectorySizeCalculator(session)
+                size_calculator.update_directory_items(batch, calculate_sizes=calculate_sizes)
                 
                 # Process direct links sequentially to avoid session issues
                 for item in batch:

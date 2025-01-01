@@ -42,31 +42,42 @@ def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
     conn.execute("INSTALL arrow;")
     conn.execute("LOAD arrow;")
     
-    # Create files table with optimized schema
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS lucidlink_files (
-            id VARCHAR NOT NULL,
-            fsentry_id VARCHAR,  
-            name VARCHAR NOT NULL,
-            relative_path VARCHAR NOT NULL,
-            type VARCHAR NOT NULL,
-            size BIGINT NOT NULL,
-            creation_time TIMESTAMP WITH TIME ZONE NOT NULL,
-            update_time TIMESTAMP WITH TIME ZONE NOT NULL,
-            direct_link VARCHAR,
-            indexed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            error_count INTEGER NOT NULL DEFAULT 0,
-            last_error VARCHAR,
-            PRIMARY KEY (id)
-        ) WITH (
-            checkpoint_threshold='1GB'
-        );
-    """)
+    # Check if we need to migrate the schema
+    needs_migration = needs_schema_update(conn)
     
-    # Create indexes for common queries with performance hints
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON lucidlink_files(relative_path) WITH (index_type='art');")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_type ON lucidlink_files(type) WITH (index_type='art');")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_update ON lucidlink_files(update_time) WITH (index_type='art');")
+    if needs_migration:
+        logger.info("Migrating database schema...")
+        reset_database(conn)
+    
+    # Create a cursor for this operation
+    cursor = conn.cursor()
+    
+    try:
+        # Create files table with optimized schema
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lucidlink_files (
+                id VARCHAR PRIMARY KEY,
+                fsentry_id VARCHAR,
+                name VARCHAR,
+                relative_path VARCHAR,
+                type VARCHAR,
+                size BIGINT,  -- Make size nullable for directories when calculation is disabled
+                creation_time TIMESTAMP WITH TIME ZONE,
+                update_time TIMESTAMP WITH TIME ZONE,
+                direct_link VARCHAR,
+                indexed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                error_count INTEGER DEFAULT 0,
+                last_error VARCHAR
+            );
+        """)
+        
+        # Create indexes for common queries with performance hints
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_path ON lucidlink_files(relative_path) WITH (index_type='art');")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON lucidlink_files(type) WITH (index_type='art');")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_update ON lucidlink_files(update_time) WITH (index_type='art');")
+        
+    finally:
+        cursor.close()
     
     return conn
 
@@ -98,7 +109,7 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
                 'name': f['name'],
                 'relative_path': f['relative_path'],
                 'type': f['type'],
-                'size': f.get('size', 0),  # Ensure size is never NULL
+                'size': f.get('size', None),  # Ensure size is never NULL
                 'creation_time': f.get('creation_time', now),
                 'update_time': f.get('update_time', now),
                 'direct_link': f.get('direct_link', None),
@@ -115,7 +126,7 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
             ('name', pa.string()),
             ('relative_path', pa.string()),
             ('type', pa.string()),
-            ('size', pa.int64()),
+            ('size', pa.int64()),  # Make size nullable for directories when calculation is disabled
             ('creation_time', pa.timestamp('us', tz='UTC')),
             ('update_time', pa.timestamp('us', tz='UTC')),
             ('direct_link', pa.string()),
@@ -261,16 +272,27 @@ def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
         # Create a cursor for this operation
         cursor = conn.cursor()
         
-        # Get column names from lucidlink_files table
+        # Get column names and properties from lucidlink_files table
         result = cursor.execute("""
-            SELECT column_name 
+            SELECT column_name, is_nullable
             FROM information_schema.columns 
             WHERE table_name = 'lucidlink_files'
         """).fetchall()
-        columns = [row[0].lower() for row in result]
         
-        # Check if relative_path and direct_link columns exist
-        return 'relative_path' not in columns or 'direct_link' not in columns or 'fsentry_id' not in columns
+        if not result:
+            return True
+            
+        columns = {row[0].lower(): row[1] for row in result}
+        
+        # Check if required columns exist and size is nullable
+        needs_update = (
+            'relative_path' not in columns or 
+            'direct_link' not in columns or 
+            'fsentry_id' not in columns or
+            (columns.get('size', 'NO') == 'NO')  # Check if size column is not nullable
+        )
+        
+        return needs_update
         
     except Exception as e:
         logger.error(f"Error checking schema: {str(e)}")
@@ -298,7 +320,7 @@ def reset_database(conn: duckdb.DuckDBPyConnection) -> None:
                 name VARCHAR,
                 relative_path VARCHAR,
                 type VARCHAR,
-                size BIGINT,
+                size BIGINT,  -- Make size nullable for directories when calculation is disabled
                 creation_time TIMESTAMP WITH TIME ZONE,
                 update_time TIMESTAMP WITH TIME ZONE,
                 direct_link VARCHAR,
@@ -307,8 +329,8 @@ def reset_database(conn: duckdb.DuckDBPyConnection) -> None:
                 last_error VARCHAR
             );
         """)
-        logger.info("Database tables reset successfully")
         
+        logger.info("Database tables reset successfully")
         logger.info("Database reset completed successfully")
         
     except Exception as e:
