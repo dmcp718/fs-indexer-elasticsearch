@@ -475,13 +475,20 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
         mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
         filespace_raw = config.get('lucidlink_filespace', {}).get('filespace_raw', '')
 
-        async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI) -> int:
+        async def process_batch(session: duckdb.DuckDBPyConnection, batch: List[Dict], stats: WorkflowStats, lucidlink_api: LucidLinkAPI, config: Dict[str, Any]) -> int:
             """Process a batch of files by inserting them into DuckDB."""
             try:
                 logger.info(f"Processing batch of {len(batch)} items...")
-                # Calculate directory sizes
-                size_calculator = DirectorySizeCalculator(session)
-                size_calculator.update_directory_items(batch)
+                
+                # Calculate directory sizes if enabled
+                if config.get('lucidlink_filespace', {}).get('calculate_directory_sizes', True):
+                    size_calculator = DirectorySizeCalculator(session)
+                    size_calculator.update_directory_items(batch)
+                else:
+                    # Set directory sizes to 0 when calculation is disabled
+                    for item in batch:
+                        if item['type'] == 'directory':
+                            item['size'] = 0
                 
                 # Process direct links sequentially to avoid session issues
                 for item in batch:
@@ -557,7 +564,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                                 logger.info("Gracefully stopping directory scan...")
                                 # Process any remaining items in the batch
                                 if batch:
-                                    await process_batch(session, batch, stats, lucidlink_api)
+                                    await process_batch(session, batch, stats, lucidlink_api, config)
                                 return  # Exit cleanly
                                 
                             # Skip files based on patterns
@@ -587,7 +594,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                             if files_in_batch >= batch_size_limit:
                                 if logger.isEnabledFor(logging.INFO):
                                     logger.info(f"Processing batch of {files_in_batch} items...")
-                                processed = await process_batch(session, batch, stats, lucidlink_api)
+                                processed = await process_batch(session, batch, stats, lucidlink_api, config)
                                 stats.update_stats(updated=processed)
                                 # Update final stats
                                 stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)
@@ -606,14 +613,14 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                     except asyncio.CancelledError:
                         logger.info("Operation cancelled, cleaning up...")
                         if batch:
-                            await process_batch(session, batch, stats, lucidlink_api)
+                            await process_batch(session, batch, stats, lucidlink_api, config)
                         raise
                     
                     # Process remaining files in the last batch
                     if files_in_batch > 0 and not shutdown_requested:
                         if logger.isEnabledFor(logging.INFO):
                             logger.info(f"Processing final batch of {files_in_batch} items...")
-                        processed = await process_batch(session, batch, stats, lucidlink_api)
+                        processed = await process_batch(session, batch, stats, lucidlink_api, config)
                         stats.update_stats(updated=processed)
                         # Update final stats
                         stats.update_stats(file_count=batch_files, dir_count=batch_dirs, size=batch_size)

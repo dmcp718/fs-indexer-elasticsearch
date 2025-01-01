@@ -26,6 +26,8 @@ lucidlink_filespace:
   skip_direct_links: false
   # LucidLink API version (2 or 3)
   lucidlink_version: 2
+  # Calculate directory sizes (may slow down processing)
+  calculate_directory_sizes: true
 
 # =============================================
 
