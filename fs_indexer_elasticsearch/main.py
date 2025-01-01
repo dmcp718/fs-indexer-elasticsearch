@@ -566,6 +566,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                         
                         # Set required fields
                         item['relative_path'] = item['name']
+                        item['name'] = os.path.basename(item['name'])
                         item['id'] = str(uuid.uuid5(NAMESPACE_DNS, item['relative_path']))
                         
                         # Add to batch
