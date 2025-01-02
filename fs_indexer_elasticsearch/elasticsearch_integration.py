@@ -23,10 +23,16 @@ class ElasticsearchClient:
     def _ensure_index_exists(self):
         """Ensure the index exists with proper mapping."""
         mapping = self._create_index_mapping()
+        stats_mapping = self._create_stats_index_mapping()
         
         if not self.client.indices.exists(index=self.index_name):
             self.client.indices.create(index=self.index_name, body=mapping)
             logging.info(f"Created index {self.index_name} with mapping")
+            
+        stats_index = f"{self.index_name}-stats"
+        if not self.client.indices.exists(index=stats_index):
+            self.client.indices.create(index=stats_index, body=stats_mapping)
+            logging.info(f"Created index {stats_index} with mapping")
 
     def _create_index_mapping(self):
         """Create the index mapping for filesystem data."""
@@ -109,6 +115,64 @@ class ElasticsearchClient:
                     "indexed_time": {
                         "type": "date",
                         "format": "strict_date_optional_time||epoch_millis"
+                    }
+                }
+            }
+        }
+
+    def _create_stats_index_mapping(self):
+        """Create the index mapping for filesystem stats data."""
+        return {
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s",
+                "analysis": {
+                    "analyzer": {
+                        "path_analyzer": {
+                            "tokenizer": "path_tokenizer",
+                            "filter": ["lowercase"]
+                        }
+                    },
+                    "tokenizer": {
+                        "path_tokenizer": {
+                            "type": "pattern",
+                            "pattern": "[/\\\\_\\.\\s]"
+                        }
+                    }
+                },
+                "mapping": {
+                    "total_fields": {
+                        "limit": 100
+                    }
+                }
+            },
+            "mappings": {
+                "properties": {
+                    "relative_root_path": {
+                        "type": "text",
+                        "analyzer": "path_analyzer",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 512
+                            }
+                        }
+                    },
+                    "total_size_bytes": {
+                        "type": "long"
+                    },
+                    "total_size": {
+                        "type": "keyword"
+                    },
+                    "total_files": {
+                        "type": "long"
+                    },
+                    "total_dirs": {
+                        "type": "long"
+                    },
+                    "indexed_at": {
+                        "type": "date"
                     }
                 }
             }

@@ -24,6 +24,7 @@ class KibanaDataViewManager:
         
         # Construct full index name with filespace if provided
         self.index_name = f"{base_index_name}-{filespace_name}" if filespace_name else base_index_name
+        self.stats_index_name = f"{self.index_name}-stats"
 
         host = self.es_config.get('host', 'localhost')
         self.kibana_url = f"http://{host}:5601"
@@ -101,16 +102,20 @@ class KibanaDataViewManager:
             }
         }
 
-    def _create_index_pattern(self, search_id: str) -> Dict:
+    def _create_index_pattern(self, search_id: str, is_stats: bool = False) -> Dict:
         """Create an index pattern object."""
+        index_name = self.stats_index_name if is_stats else self.index_name
+        field_formats = self._create_field_formats() if not is_stats else {}
+        columns = self._get_stats_columns() if is_stats else []
+        
         return {
             "type": "index-pattern",
             "id": search_id,
             "attributes": {
-                "title": self.index_name,
-                "timeFieldName": None,
+                "title": index_name,
+                "timeFieldName": "indexed_at" if is_stats else None,
                 "fields": "[]",
-                "fieldFormatMap": json.dumps(self._create_field_formats()),
+                "fieldFormatMap": json.dumps(field_formats),
                 "typeMeta": "{}",
                 "defaultSearchId": search_id
             },
@@ -128,48 +133,98 @@ class KibanaDataViewManager:
             ]
         }
 
-    def _create_search_object(self, search_id: str) -> Dict:
-        """Create a search object with layout settings."""
-        search_attrs = {
-            "title": f"{self.index_name} Layout",
-            "description": "Default layout for file browser",
-            "hits": 0,
-            "columns": [
-                "name",
-                "creation_time",
-                "modified_time",
-                "size",
-                "extension",
-                "type",
-                "direct_link",
-                "filepath",
-                "fsEntryId",
-                "checksum"
-            ],
-            "sort": [],
-            "kibanaSavedObjectMeta": {
-                "searchSourceJSON": json.dumps({
-                    "query": {"query": "", "language": "kuery"},
-                    "filter": [],
-                    "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
-                    "highlightAll": False,
-                    "version": True
-                })
-            }
-        }
+    def _get_stats_columns(self) -> List[str]:
+        """Get columns for stats view."""
+        return [
+            "relative_root_path",
+            "total_size",
+            "total_files",
+            "total_dirs",
+            "indexed_at"
+        ]
 
-        # Add grid settings (for both v2 and v3)
-        search_attrs["grid"] = {
-            "columns": {
-                "creation_time": {"width": 149},
-                "modified_time": {"width": 152},
-                "size": {"width": 92},
-                "extension": {"width": 160},
-                "type": {"width": 96},
-                "fsEntryId": {"width": 129},
-                "direct_link": {"width": 162}
+    def _create_search_object(self, search_id: str, is_stats: bool = False) -> Dict:
+        """Create a search object with layout settings."""
+        index_name = self.stats_index_name if is_stats else self.index_name
+        title = f"{index_name} Layout"
+        
+        if is_stats:
+            search_attrs = {
+                "title": title,
+                "description": "Stats view",
+                "hits": 0,
+                "columns": [
+                    "indexed_at",
+                    "relative_root_path",
+                    "total_dirs",
+                    "total_files",
+                    "total_size",
+                    "total_size_bytes"
+                ],
+                "sort": [["indexed_at", "desc"]],
+                "kibanaSavedObjectMeta": {
+                    "searchSourceJSON": json.dumps({
+                        "query": {"query": "", "language": "kuery"},
+                        "filter": [],
+                        "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                        "highlightAll": False,
+                        "version": True
+                    })
+                },
+                "grid": {
+                    "columns": {
+                        "relative_root_path": {"width": 163},
+                        "total_files": {"width": 137},
+                        "total_dirs": {"width": 131},
+                        "total_size": {"width": 176},
+                        "total_size_bytes": {"width": 325}
+                    }
+                },
+                "hideChart": False,
+                "rowHeight": -1,
+                "headerRowHeight": -1,
+                "isTextBasedQuery": False,
+                "timeRestore": False
             }
-        }
+        else:
+            search_attrs = {
+                "title": title,
+                "description": "Default layout for file browser",
+                "hits": 0,
+                "columns": [
+                    "name",
+                    "creation_time",
+                    "modified_time",
+                    "size",
+                    "extension",
+                    "type",
+                    "direct_link",
+                    "filepath",
+                    "fsEntryId",
+                    "checksum"
+                ],
+                "sort": [],
+                "kibanaSavedObjectMeta": {
+                    "searchSourceJSON": json.dumps({
+                        "query": {"query": "", "language": "kuery"},
+                        "filter": [],
+                        "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                        "highlightAll": False,
+                        "version": True
+                    })
+                },
+                "grid": {
+                    "columns": {
+                        "creation_time": {"width": 149},
+                        "modified_time": {"width": 152},
+                        "size": {"width": 92},
+                        "extension": {"width": 120},
+                        "type": {"width": 96},
+                        "fsEntryId": {"width": 129},
+                        "direct_link": {"width": 162}
+                    }
+                }
+            }
 
         return {
             "type": "search",
@@ -261,33 +316,58 @@ class KibanaDataViewManager:
             logger.error(f"Kibana API request failed: {err}")
             return False
 
+    def create_data_views(self) -> bool:
+        """Create Kibana data views for the index."""
+        try:
+            # Check if data views already exist
+            existing_views = self._get_existing_data_views()
+            main_view_exists = any(view['attributes']['title'] == self.index_name for view in existing_views)
+            stats_view_exists = any(view['attributes']['title'] == self.stats_index_name for view in existing_views)
+            
+            if main_view_exists and stats_view_exists:
+                logger.info("Data views already exist")
+                return True
+                
+            # Generate a unique search ID for both views
+            search_id = str(uuid.uuid4())
+            
+            # Create objects to import
+            objects_to_import = []
+            
+            # Create main index pattern if needed
+            if not main_view_exists:
+                objects_to_import.extend([
+                    self._create_config_object(search_id),
+                    self._create_index_pattern(search_id),
+                    self._create_search_object(search_id)
+                ])
+            
+            # Create stats index pattern if needed
+            if not stats_view_exists:
+                stats_search_id = f"{search_id}-stats"
+                objects_to_import.extend([
+                    self._create_index_pattern(stats_search_id, is_stats=True),
+                    self._create_search_object(stats_search_id, is_stats=True)
+                ])
+            
+            # Send objects to Kibana
+            return self._send_objects_to_kibana(objects_to_import)
+        
+        except Exception as e:
+            logger.error(f"Failed to create data views: {e}")
+            return False
+
     def setup_kibana_views(self) -> bool:
         """Create both data view and saved layout if they don't exist."""
         try:
-            logger.info("Setting up Kibana data views...")
+            # Create data views (both main and stats)
+            if not self.create_data_views():
+                logger.error("Failed to create data views")
+                return False
+                
+            logger.info("Successfully created Kibana data views")
+            return True
             
-            # Check for existing data views
-            existing_views = self._get_existing_data_views()
-            for view in existing_views:
-                if view.get("attributes", {}).get("title") == self.index_name:
-                    logger.info(f"Data view for {self.index_name} already exists")
-                    return True
-
-            objects_to_import = []
-
-            # Generate a unique ID for our data view
-            search_id = str(uuid.uuid4())
-
-            # Create all objects from scratch
-            objects_to_import.extend([
-                self._create_config_object(search_id),
-                self._create_index_pattern(search_id),
-                self._create_search_object(search_id)
-            ])
-
-            # Send objects to Kibana
-            return self._send_objects_to_kibana(objects_to_import)
-
         except Exception as e:
-            logger.error(f"Failed to setup Kibana data views: {e}")
+            logger.error(f"Failed to setup Kibana views: {e}")
             return False
