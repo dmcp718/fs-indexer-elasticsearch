@@ -188,6 +188,31 @@ class KibanaDataViewManager:
             "version": self._get_default_version()
         }
 
+    def _get_existing_data_views(self) -> List[Dict]:
+        """Get list of existing data views from Kibana."""
+        endpoint = "/api/saved_objects/_find"
+        params = {
+            "type": "index-pattern",
+            "fields": ["title"],
+            "per_page": 1000
+        }
+        try:
+            response = requests.get(
+                url=f"{self.kibana_url}{endpoint}",
+                headers={"kbn-xsrf": "true"},
+                auth=self.auth,
+                params=params
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("saved_objects", [])
+            else:
+                logger.error(f"Failed to get data views: {response.text}")
+                return []
+        except requests.exceptions.RequestException as err:
+            logger.error(f"Failed to get data views: {err}")
+            return []
+
     def _send_objects_to_kibana(self, objects: List[Dict]) -> bool:
         """Send objects to Kibana using the import endpoint."""
         endpoint = f"/api/saved_objects/_import"
@@ -236,9 +261,17 @@ class KibanaDataViewManager:
             return False
 
     def setup_kibana_views(self) -> bool:
-        """Create both data view and saved layout."""
+        """Create both data view and saved layout if they don't exist."""
         try:
             logger.info("Setting up Kibana data views...")
+            
+            # Check for existing data views
+            existing_views = self._get_existing_data_views()
+            for view in existing_views:
+                if view.get("attributes", {}).get("title") == self.index_name:
+                    logger.info(f"Data view for {self.index_name} already exists")
+                    return True
+
             objects_to_import = []
 
             # Generate a unique ID for our data view
