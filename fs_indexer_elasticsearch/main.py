@@ -909,6 +909,18 @@ def main():
         
         # Initialize database connection
         db_url = config['database']['connection']['url']
+        
+        # Use filespace name for database file if lucidlink is enabled
+        if config.get('lucidlink_filespace', {}).get('enabled', False):
+            filespace_info = get_filespace_info(config)
+            if filespace_info:
+                filespace_raw, filespace_name, filespace_port, mount_point = filespace_info
+                # Create data directory if it doesn't exist
+                os.makedirs("data", exist_ok=True)
+                # Update database URL to use filespace name in data directory
+                db_url = f"duckdb:///data/{filespace_name}_index.duckdb"
+                logger.info(f"Using database: {db_url}")
+
         session = init_database(db_url)
 
         # Initialize workflow stats
