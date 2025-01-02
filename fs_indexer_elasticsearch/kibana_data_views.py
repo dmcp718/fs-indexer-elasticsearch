@@ -177,7 +177,7 @@ class KibanaDataViewManager:
             # Create config object first
             config_object = {
                 "type": "config",
-                "id": "7.11.0",  # Changed from 8.17.0 to match Kibana version
+                "id": "7.11.0",
                 "attributes": {
                     "defaultIndex": self.index_pattern_id,
                     "search:defaultSearch": search_id,
@@ -209,7 +209,35 @@ class KibanaDataViewManager:
             }
             objects_to_import.append(config_object)
 
-            # Create index pattern with additional fields
+            # Load version-specific data view config
+            data_view_file = os.path.join(
+                base_dir,
+                'kibana_data_view',
+                f'v{self.lucidlink_version}_kibana_data_view.json'
+            )
+            data_view_config = self._load_json_file(data_view_file)
+            if not data_view_config:
+                return False
+
+            # Create index pattern with version-specific fields
+            if self.lucidlink_version == 3:
+                # Use v3's URL format for direct_link
+                field_formats = {
+                    "direct_link": {
+                        "id": "url",
+                        "params": {
+                            "labelTemplate": "link to asset"
+                        }
+                    }
+                }
+            else:
+                # Use v2's simple string format
+                field_formats = {
+                    "direct_link": {
+                        "id": "string"
+                    }
+                }
+
             index_pattern = {
                 "type": "index-pattern",
                 "id": self.index_pattern_id,
@@ -217,7 +245,7 @@ class KibanaDataViewManager:
                     "title": index_pattern_config["attributes"]["title"],
                     "timeFieldName": None,
                     "fields": "[]",
-                    "fieldFormatMap": "{}",
+                    "fieldFormatMap": json.dumps(field_formats),
                     "typeMeta": "{}",
                     "defaultSearchId": search_id
                 },
@@ -236,7 +264,7 @@ class KibanaDataViewManager:
             }
             objects_to_import.append(index_pattern)
 
-            # Create search object with additional fields
+            # Create search object with version-specific attributes
             search_source = {
                 "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
                 "filter": [],
@@ -248,24 +276,30 @@ class KibanaDataViewManager:
                 "version": True
             }
 
+            search_attrs = {
+                "title": layout_config["attributes"].get("title", "Default_layout"),
+                "description": layout_config["attributes"].get("description", ""),
+                "hits": 0,
+                "columns": layout_config["attributes"].get("columns", ["_source"]),
+                "sort": layout_config["attributes"].get("sort", []),
+                "version": 1,
+                "kibanaSavedObjectMeta": {
+                    "searchSourceJSON": json.dumps(search_source)
+                },
+                "refreshInterval": {
+                    "pause": True,
+                    "value": 0
+                }
+            }
+
+            # Add grid settings for v3
+            if self.lucidlink_version == 3 and "grid" in layout_config["attributes"]:
+                search_attrs["grid"] = layout_config["attributes"]["grid"]
+
             search_object = {
                 "type": "search",
                 "id": search_id,
-                "attributes": {
-                    "title": layout_config["attributes"].get("title", "Default_layout"),
-                    "description": layout_config["attributes"].get("description", ""),
-                    "hits": 0,
-                    "columns": layout_config["attributes"].get("columns", ["_source"]),
-                    "sort": layout_config["attributes"].get("sort", []),
-                    "version": 1,
-                    "kibanaSavedObjectMeta": {
-                        "searchSourceJSON": json.dumps(search_source)
-                    },
-                    "refreshInterval": {
-                        "pause": True,
-                        "value": 0
-                    }
-                },
+                "attributes": search_attrs,
                 "references": [
                     {
                         "id": self.index_pattern_id,
