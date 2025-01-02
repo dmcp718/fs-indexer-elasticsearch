@@ -44,7 +44,7 @@ elasticsearch:
   port: 9200
   username: ""  # Leave empty for no authentication
   password: ""  # Leave empty for no authentication
-  index_name: filespace
+  index_name: filespace # For LucidLink filespaces, app uses filespace-domain for index name
   ssl: false
 
 # =============================================
@@ -63,7 +63,7 @@ database:
     url: "duckdb:///data/fs_index.duckdb"
     options:
       memory_limit: "85%"
-      threads: 10 # Adjust for less than total number of CPU cores on host
+      threads: 10 # Adjust to less than total number of CPU cores on indexer host
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
       compression: "lz4"
@@ -145,6 +145,7 @@ skip_patterns:
     - '*.dll'
     - '*.class'
     - '*.o'
+    - '*.dbr'
   
   directories:
     - .git
