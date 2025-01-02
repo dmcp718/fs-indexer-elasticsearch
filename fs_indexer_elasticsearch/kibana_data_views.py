@@ -139,6 +139,7 @@ class KibanaDataViewManager:
                 "creation_time",
                 "modified_time",
                 "size",
+                "extension",
                 "type",
                 "direct_link",
                 "filepath",
