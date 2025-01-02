@@ -158,18 +158,18 @@ class KibanaDataViewManager:
             }
         }
 
-        # Add grid settings for v3
-        if self.lucidlink_version == 3:
-            search_attrs["grid"] = {
-                "columns": {
-                    "creation_time": {"width": 149},
-                    "modified_time": {"width": 152},
-                    "size": {"width": 92},
-                    "type": {"width": 96},
-                    "fsEntryId": {"width": 129},
-                    "direct_link": {"width": 162}
-                }
+        # Add grid settings (for both v2 and v3)
+        search_attrs["grid"] = {
+            "columns": {
+                "creation_time": {"width": 149},
+                "modified_time": {"width": 152},
+                "size": {"width": 92},
+                "extension": {"width": 160},
+                "type": {"width": 96},
+                "fsEntryId": {"width": 129},
+                "direct_link": {"width": 162}
             }
+        }
 
         return {
             "type": "search",
