@@ -56,16 +56,23 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load configuration from file."""
     if not config_path:
         # Try locations in order:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_locations = [
-            'config/indexer-config.yaml',  # Project config directory
-            'indexer-config.yaml',         # Current directory
+            os.path.join(base_dir, 'config', 'indexer-config.yaml'),  # Project config directory
+            os.path.join(base_dir, 'indexer-config.yaml'),         # Current directory
             os.path.join(os.path.dirname(__file__), 'indexer-config.yaml')  # Package directory
         ]
         
+        logger.info(f"Base directory: {base_dir}")
+        logger.info("Searching for config in locations:")
         for loc in config_locations:
+            logger.info(f"  - {loc}")
             if os.path.exists(loc):
                 config_path = loc
+                logger.info(f"Found config at: {loc}")
                 break
+            else:
+                logger.info(f"  Not found at: {loc}")
     
     if not config_path or not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found in any of the expected locations: {config_locations}")
@@ -528,7 +535,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                     # Get full and relative root paths
                     full_root_path = config.get('root_path', '')
                     if not full_root_path:
-                        raise ValueError("Root path is required")
+                        raise ValueError("Root path is required. Please provide it using the --root-path argument or root_path: in config/indexer-config.yaml\n\nExamples:\n\nCommand line argument:\n--root-path /path/to/index\n\nconfig/indexer-config.yaml:\nroot_path: \"/path/to/index\"\n")
                         
                     # Get relative path by removing mount point prefix
                     if not full_root_path.startswith(mount_point):
@@ -537,7 +544,7 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                     relative_root_path = full_root_path[len(mount_point):].lstrip('/')
                     # For logging only: if root path equals mount point, show as "/"
                     display_relative_path = "/" if full_root_path == mount_point else relative_root_path
-                    logger.info(f"Full root path: {full_root_path}")
+                    logger.info(f"Absolute path: {full_root_path}")
                     logger.info(f"Mount point: {mount_point}")
                     logger.info(f"Relative root path: {display_relative_path}")
                     
@@ -883,6 +890,11 @@ def main():
         if args.root_path:
             config['root_path'] = args.root_path  # Set root path from command line
             logger.info(f"Using root path from command line: {args.root_path}")
+        elif config.get('root_path') and config['root_path'].strip():  # Check for non-empty string
+            logger.info(f"Using root path from config file: {config['root_path']}")
+        else:
+            raise ValueError("Root path is required. Please provide it using the --root-path argument or root_path: in config/indexer-config.yaml\n\nExamples:\n\nCommand line argument:\n--root-path /path/to/index\n\nconfig/indexer-config.yaml:\nroot_path: \"/path/to/index\"\n")
+            
         if args.mode:
             config['mode'] = args.mode
 

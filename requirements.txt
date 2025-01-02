@@ -3,7 +3,6 @@ duckdb>=0.9.0
 xxhash>=3.0.0
 pyyaml>=6.0.0
 python-dateutil>=2.8.2
-pandas>=2.0.0
 pytz>=2023.3
 aiohttp>=3.9.0
 requests>=2.31.0
