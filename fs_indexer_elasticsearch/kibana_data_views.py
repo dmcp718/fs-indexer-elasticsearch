@@ -6,6 +6,7 @@ import datetime
 import requests
 from requests.auth import HTTPBasicAuth
 import base64
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,13 @@ class KibanaDataViewManager:
         """Initialize with elasticsearch config and lucidlink version."""
         self.es_config = config.get('elasticsearch', {})
         self.lucidlink_version = config.get('lucidlink_filespace', {}).get('lucidlink_version')
+
+        # Get the base index name and filespace name
+        base_index_name = self.es_config.get('index_name', 'filespace')
+        filespace_name = config.get('lucidlink_filespace', {}).get('name', '')
+        
+        # Construct full index name with filespace if provided
+        self.index_name = f"{base_index_name}-{filespace_name}" if filespace_name else base_index_name
 
         host = self.es_config.get('host', 'localhost')
         self.kibana_url = f"http://{host}:5601"
@@ -41,59 +49,144 @@ class KibanaDataViewManager:
         version_bytes = json.dumps(version_array).encode('utf-8')
         return base64.b64encode(version_bytes).decode('utf-8')
 
-    def _create_search_object(self, saved_layout: Dict) -> Dict:
-        """Create a search object from saved layout."""
-        # Create search object attributes
-        attributes = {
-            "title": saved_layout["attributes"].get("title", "Default_layout"),
-            "description": saved_layout["attributes"].get("description", ""),
+    def _create_config_object(self, search_id: str) -> Dict:
+        """Create a config object with default settings."""
+        return {
+            "type": "config",
+            "id": "7.11.0",
+            "attributes": {
+                "defaultIndex": search_id,
+                "search:defaultSearch": search_id,
+                "discover": {
+                    "defaultSearch": search_id,
+                    "defaultIndex": search_id
+                },
+                "defaultRoute": f"/app/discover#/view/{search_id}",
+                "page:defaultIndex": search_id,
+                "page:defaultSearch": search_id
+            },
+            "migrationVersion": {
+                "config": "7.11.0"
+            },
+            "coreMigrationVersion": "7.11.0",
+            "version": self._get_default_version(),
+            "references": [
+                {
+                    "id": search_id,
+                    "name": "search_default",
+                    "type": "search"
+                },
+                {
+                    "id": search_id,
+                    "name": "index_pattern_default",
+                    "type": "index-pattern"
+                }
+            ]
+        }
+
+    def _create_field_formats(self) -> Dict:
+        """Create field formats based on version."""
+        if self.lucidlink_version == 3:
+            return {
+                "direct_link": {
+                    "id": "url",
+                    "params": {
+                        "labelTemplate": "link to asset"
+                    }
+                }
+            }
+        return {
+            "direct_link": {
+                "id": "string"
+            }
+        }
+
+    def _create_index_pattern(self, search_id: str) -> Dict:
+        """Create an index pattern object."""
+        return {
+            "type": "index-pattern",
+            "id": search_id,
+            "attributes": {
+                "title": self.index_name,
+                "timeFieldName": None,
+                "fields": "[]",
+                "fieldFormatMap": json.dumps(self._create_field_formats()),
+                "typeMeta": "{}",
+                "defaultSearchId": search_id
+            },
+            "migrationVersion": {
+                "index-pattern": "7.11.0"
+            },
+            "coreMigrationVersion": "7.11.0",
+            "version": self._get_default_version(),
+            "references": [
+                {
+                    "id": search_id,
+                    "name": "default_search",
+                    "type": "search"
+                }
+            ]
+        }
+
+    def _create_search_object(self, search_id: str) -> Dict:
+        """Create a search object with layout settings."""
+        search_attrs = {
+            "title": f"{self.index_name} Layout",
+            "description": "Default layout for file browser",
             "hits": 0,
-            "columns": saved_layout["attributes"].get("columns", []),
-            "sort": saved_layout["attributes"].get("sort", []),
-            "version": 1,
+            "columns": [
+                "name",
+                "creation_time",
+                "modified_time",
+                "size",
+                "type",
+                "direct_link",
+                "filepath",
+                "fsEntryId",
+                "checksum"
+            ],
+            "sort": [],
             "kibanaSavedObjectMeta": {
                 "searchSourceJSON": json.dumps({
-                    "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                    "query": {"query": "", "language": "kuery"},
                     "filter": [],
-                    "query": {
-                        "query": "",
-                        "language": "kuery"
-                    }
+                    "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                    "highlightAll": False,
+                    "version": True
                 })
             }
         }
-        
-        # Create references using our index pattern ID
-        references = [
-            {
-                "name": "kibanaSavedObjectMeta.searchSourceJSON.index",
-                "type": "index-pattern",
-                "id": self.index_pattern_id  # Use our actual index pattern ID
+
+        # Add grid settings for v3
+        if self.lucidlink_version == 3:
+            search_attrs["grid"] = {
+                "columns": {
+                    "creation_time": {"width": 149},
+                    "modified_time": {"width": 152},
+                    "size": {"width": 92},
+                    "type": {"width": 96},
+                    "fsEntryId": {"width": 129},
+                    "direct_link": {"width": 162}
+                }
             }
-        ]
-        
-        # Add additional references if they exist, but ensure they use our index pattern ID
-        if saved_layout.get("references"):
-            for ref in saved_layout["references"]:
-                if ref["type"] == "index-pattern":
-                    ref["id"] = self.index_pattern_id
-                if ref not in references:
-                    references.append(ref)
-        
-        # Create the complete search object
-        search_object = {
+
+        return {
             "type": "search",
-            "id": saved_layout["id"],
-            "attributes": attributes,
-            "references": references,
+            "id": search_id,
+            "attributes": search_attrs,
+            "references": [
+                {
+                    "id": search_id,
+                    "name": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                    "type": "index-pattern"
+                }
+            ],
             "migrationVersion": {
                 "search": "7.11.0"
             },
             "coreMigrationVersion": "7.11.0",
             "version": self._get_default_version()
         }
-        
-        return search_object
 
     def _send_objects_to_kibana(self, objects: List[Dict]) -> bool:
         """Send objects to Kibana using the import endpoint."""
@@ -146,178 +239,21 @@ class KibanaDataViewManager:
         """Create both data view and saved layout."""
         try:
             logger.info("Setting up Kibana data views...")
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             objects_to_import = []
 
-            # Load index pattern config
-            index_pattern_file = os.path.join(base_dir, 'kibana_data_view', 'index_pattern.json')
-            logger.debug(f"Loading index pattern from: {index_pattern_file}")
-            
-            index_pattern_config = self._load_json_file(index_pattern_file)
-            if not index_pattern_config:
-                return False
+            # Generate a unique ID for our data view
+            search_id = str(uuid.uuid4())
 
-            # Store index pattern ID for later use
-            self.index_pattern_id = index_pattern_config["id"]
+            # Create all objects from scratch
+            objects_to_import.extend([
+                self._create_config_object(search_id),
+                self._create_index_pattern(search_id),
+                self._create_search_object(search_id)
+            ])
 
-            # Load version-specific saved layout config
-            layout_file = os.path.join(
-                base_dir, 
-                'kibana_data_view', 
-                f'v{self.lucidlink_version}_saved_layout.json'
-            )
-            logger.debug(f"Loading saved layout from: {layout_file}")
-            
-            layout_config = self._load_json_file(layout_file)
-            if not layout_config:
-                return False
-
-            search_id = layout_config["id"]
-
-            # Create config object first
-            config_object = {
-                "type": "config",
-                "id": "7.11.0",
-                "attributes": {
-                    "defaultIndex": self.index_pattern_id,
-                    "search:defaultSearch": search_id,
-                    "discover": {
-                        "defaultSearch": search_id,
-                        "defaultIndex": self.index_pattern_id
-                    },
-                    "defaultRoute": f"/app/discover#/view/{search_id}",
-                    "page:defaultIndex": self.index_pattern_id,
-                    "page:defaultSearch": search_id
-                },
-                "migrationVersion": {
-                    "config": "7.11.0"
-                },
-                "coreMigrationVersion": "7.11.0",
-                "version": self._get_default_version(),
-                "references": [
-                    {
-                        "id": search_id,
-                        "name": "search_default",
-                        "type": "search"
-                    },
-                    {
-                        "id": self.index_pattern_id,
-                        "name": "index_pattern_default",
-                        "type": "index-pattern"
-                    }
-                ]
-            }
-            objects_to_import.append(config_object)
-
-            # Load version-specific data view config
-            data_view_file = os.path.join(
-                base_dir,
-                'kibana_data_view',
-                f'v{self.lucidlink_version}_kibana_data_view.json'
-            )
-            data_view_config = self._load_json_file(data_view_file)
-            if not data_view_config:
-                return False
-
-            # Create index pattern with version-specific fields
-            if self.lucidlink_version == 3:
-                # Use v3's URL format for direct_link
-                field_formats = {
-                    "direct_link": {
-                        "id": "url",
-                        "params": {
-                            "labelTemplate": "link to asset"
-                        }
-                    }
-                }
-            else:
-                # Use v2's simple string format
-                field_formats = {
-                    "direct_link": {
-                        "id": "string"
-                    }
-                }
-
-            index_pattern = {
-                "type": "index-pattern",
-                "id": self.index_pattern_id,
-                "attributes": {
-                    "title": index_pattern_config["attributes"]["title"],
-                    "timeFieldName": None,
-                    "fields": "[]",
-                    "fieldFormatMap": json.dumps(field_formats),
-                    "typeMeta": "{}",
-                    "defaultSearchId": search_id
-                },
-                "migrationVersion": {
-                    "index-pattern": "7.11.0"
-                },
-                "coreMigrationVersion": "7.11.0",
-                "version": self._get_default_version(),
-                "references": [
-                    {
-                        "id": search_id,
-                        "name": "default_search",
-                        "type": "search"
-                    }
-                ]
-            }
-            objects_to_import.append(index_pattern)
-
-            # Create search object with version-specific attributes
-            search_source = {
-                "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
-                "filter": [],
-                "query": {
-                    "query": "",
-                    "language": "kuery"
-                },
-                "highlightAll": True,
-                "version": True
-            }
-
-            search_attrs = {
-                "title": layout_config["attributes"].get("title", "Default_layout"),
-                "description": layout_config["attributes"].get("description", ""),
-                "hits": 0,
-                "columns": layout_config["attributes"].get("columns", ["_source"]),
-                "sort": layout_config["attributes"].get("sort", []),
-                "version": 1,
-                "kibanaSavedObjectMeta": {
-                    "searchSourceJSON": json.dumps(search_source)
-                },
-                "refreshInterval": {
-                    "pause": True,
-                    "value": 0
-                }
-            }
-
-            # Add grid settings for v3
-            if self.lucidlink_version == 3 and "grid" in layout_config["attributes"]:
-                search_attrs["grid"] = layout_config["attributes"]["grid"]
-
-            search_object = {
-                "type": "search",
-                "id": search_id,
-                "attributes": search_attrs,
-                "references": [
-                    {
-                        "id": self.index_pattern_id,
-                        "name": "kibanaSavedObjectMeta.searchSourceJSON.index",
-                        "type": "index-pattern"
-                    }
-                ],
-                "migrationVersion": {
-                    "search": "7.11.0"
-                },
-                "coreMigrationVersion": "7.11.0",
-                "version": self._get_default_version()
-            }
-            objects_to_import.append(search_object)
-
-            # Send all objects to Kibana
+            # Send objects to Kibana
             return self._send_objects_to_kibana(objects_to_import)
 
         except Exception as e:
-            logger.error(f"Failed to create Kibana data views: {e}")
+            logger.error(f"Failed to setup Kibana data views: {e}")
             return False
