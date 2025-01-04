@@ -21,16 +21,17 @@ import duckdb
 import pandas as pd
 from elasticsearch import helpers
 import signal
-from fs_indexer_elasticsearch.directory_size import DirectorySizeCalculator
-from .db_duckdb import (
+from .config.config import load_config
+from .database.db_duckdb import (
     init_database,
     bulk_upsert_files,
     cleanup_missing_files,
 )
-from .elasticsearch_integration import ElasticsearchClient
-from .lucidlink_api import LucidLinkAPI
-from .filespace_prompt import get_filespace_info
-from .kibana_data_views import KibanaDataViewManager
+from .elasticsearch.elasticsearch_integration import ElasticsearchClient
+from .lucidlink.directory_size import DirectorySizeCalculator
+from .lucidlink.lucidlink_api import LucidLinkAPI
+from .lucidlink.filespace_prompt import get_filespace_info
+from .elasticsearch.kibana_data_views import KibanaDataViewManager
 
 # Initialize basic logging first
 logger = logging.getLogger(__name__)
@@ -809,8 +810,11 @@ def main():
                           metavar='PATH',
                           help='Root directory path to index')
         parser.add_argument('--mode',
+                          metavar='MODE',
                           choices=['elasticsearch', 'index-only'],
-                          help='Operation mode:\n\n  elasticsearch: index and send to ES (default)\n  index-only: only update local index')
+                          help='Operation mode (elasticsearch or index-only):\n'
+                               '  elasticsearch: index and send to ES (default)\n'
+                               '  index-only: only update local index')
 
         args = parser.parse_args()
 
