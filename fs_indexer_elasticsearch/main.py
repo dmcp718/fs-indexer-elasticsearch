@@ -830,6 +830,9 @@ def main():
             config['mode'] = args.mode
             logger.info(f"Using mode from command line: {args.mode}")
         elif config.get('mode'):
+            # Validate mode from config
+            if config['mode'] not in ['elasticsearch', 'index-only']:
+                raise ValueError(f"Invalid mode '{config['mode']}' in config file. Must be one of: elasticsearch, index-only")
             logger.info(f"Using mode from config file: {config['mode']}")
         else:
             config['mode'] = 'elasticsearch'  # Default if not specified in CLI or config
