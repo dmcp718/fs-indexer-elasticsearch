@@ -798,11 +798,20 @@ def main():
         signal.signal(signal.SIGTERM, signal_handler)
         
         # Parse command line arguments
-        parser = argparse.ArgumentParser(description='Index filesystem metadata')
-        parser.add_argument('--config', help='Path to config file')
-        parser.add_argument('--root-path', help='Root path to index')
-        parser.add_argument('--mode', choices=['elasticsearch', 'index-only'], 
-                          help='Operation mode: elasticsearch (default) or index-only')
+        parser = argparse.ArgumentParser(
+            description='Index filesystem metadata',
+            formatter_class=argparse.RawTextHelpFormatter
+        )
+        parser.add_argument('--config', 
+                          metavar='CONFIG',
+                          help='Path to configuration file (default: config/indexer-config.yaml)')
+        parser.add_argument('--root-path',
+                          metavar='PATH',
+                          help='Root directory path to index')
+        parser.add_argument('--mode',
+                          choices=['elasticsearch', 'index-only'],
+                          default='elasticsearch',
+                          help='Operation mode:\n  elasticsearch: index and send to ES (default)\n  index-only: only update local index')
         args = parser.parse_args()
 
         # Load configuration
