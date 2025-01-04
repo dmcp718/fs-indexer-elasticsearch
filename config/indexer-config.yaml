@@ -25,7 +25,7 @@ lucidlink_filespace:
   # Skip generating direct links for files (faster indexing)
   skip_direct_links: false
   # LucidLink filespace version (2 or 3)
-  lucidlink_version: 2
+  lucidlink_version: 3
   # LucidLink port
   port: 9778
   # Calculate directory sizes (may slow down processing)
@@ -152,6 +152,6 @@ skip_patterns:
     - .venv
     - env
     - .env
-    - .lucid_audit
+    - '.lucid_audit'
     - '.Trash*'
     - '.Spotlight*'
