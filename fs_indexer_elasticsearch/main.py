@@ -206,6 +206,7 @@ def should_skip_file(file_info: Dict[str, Any], skip_patterns: Dict[str, List[st
     
     filename = file_info['name'].split('/')[-1]
     full_path = file_info['name']  # Use full path from API
+    is_directory = file_info.get('type') == 'directory'
     
     # Debug logging
     if logger.isEnabledFor(logging.DEBUG):
@@ -217,20 +218,30 @@ def should_skip_file(file_info: Dict[str, Any], skip_patterns: Dict[str, List[st
         dir_pattern = dir_pattern.strip('/')
         clean_path = full_path.strip('/')
         
-        # Support glob patterns for directories
-        if fnmatch.fnmatch(clean_path, dir_pattern) or fnmatch.fnmatch(clean_path, f"*/{dir_pattern}/*") or fnmatch.fnmatch(clean_path, f"*/{dir_pattern}"):
+        # For directories, check if the name matches directly
+        if is_directory and (fnmatch.fnmatch(filename, dir_pattern) or 
+                           fnmatch.fnmatch(clean_path, dir_pattern) or 
+                           fnmatch.fnmatch(clean_path, f"*/{dir_pattern}")):
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Skipping {full_path} due to directory pattern {dir_pattern}")
+                logger.debug(f"Skipping directory {full_path} due to pattern {dir_pattern}")
+            return True
+        
+        # For files, check if they're in a skipped directory
+        elif not is_directory and (fnmatch.fnmatch(clean_path, f"{dir_pattern}/*") or 
+                                 fnmatch.fnmatch(clean_path, f"*/{dir_pattern}/*")):
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Skipping file {full_path} due to directory pattern {dir_pattern}")
             return True
     
-    # Check file extensions
-    for ext in skip_patterns.get('extensions', []):
-        # Remove leading dot if present in the extension pattern
-        ext = ext.lstrip('.')
-        if filename.endswith(f".{ext}") or filename == ext:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Skipping {full_path} due to extension pattern {ext}")
-            return True
+    # Only check file extensions for files, not directories
+    if not is_directory:
+        for ext in skip_patterns.get('extensions', []):
+            # Remove leading dot if present in the extension pattern
+            ext = ext.lstrip('.')
+            if filename.endswith(f".{ext}") or filename == ext:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Skipping {full_path} due to extension pattern {ext}")
+                return True
     
     return False
 
@@ -266,9 +277,16 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
         """Scan a single directory using LucidLink API."""
         files = []
         try:
+            # Check if this directory should be skipped
+            relative_path = str(dir_path.relative_to(root_path))
+            if should_skip_file({'name': relative_path, 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Skipping directory tree: {relative_path}")
+                return files
+                
             # Get directory listing from API
             api_response = requests.get(f"{api_base_url}/list", params={
-                'path': str(dir_path.relative_to(root_path))
+                'path': relative_path
             }, timeout=30)
             api_response.raise_for_status()
             
@@ -303,8 +321,12 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
     for entry in root_entries:
         try:
             path = Path(entry['name'])
-            if entry['type'] == 'directory' and not should_skip_file(file_info={'name': entry['name'], 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
-                dirs_to_scan.append(root_path / path)
+            if entry['type'] == 'directory':
+                # Check if this directory should be skipped
+                if not should_skip_file(file_info={'name': entry['name'], 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
+                    dirs_to_scan.append(root_path / path)
+                elif logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Skipping directory tree: {entry['name']}")
             elif entry['type'] == 'file' and not should_skip_file(file_info={'name': entry['name'], 'type': 'file'}, skip_patterns=config.get('skip_patterns', {})):
                 scanned_files += 1
                 yield {
@@ -346,14 +368,27 @@ def scan_directory_parallel(root_path: Path, config: Dict[str, Any], max_workers
             # Get subdirectories from processed directories
             for dir_path in chunk:
                 try:
+                    # Skip this directory if it matches skip patterns
+                    relative_path = str(dir_path.relative_to(root_path))
+                    if should_skip_file({'name': relative_path, 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"Skipping directory tree: {relative_path}")
+                        continue
+                        
                     api_response = requests.get(f"{api_base_url}/list", params={
-                        'path': str(dir_path.relative_to(root_path))
+                        'path': relative_path
                     }, timeout=30)
                     api_response.raise_for_status()
                     
                     for entry in api_response.json():
-                        if entry['type'] == 'directory' and not should_skip_file(file_info={'name': entry['name'], 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
-                            dirs_to_scan.append(dir_path / entry['name'])
+                        if entry['type'] == 'directory':
+                            # Check if subdirectory should be skipped
+                            subdir_path = dir_path / entry['name']
+                            relative_subdir = str(subdir_path.relative_to(root_path))
+                            if not should_skip_file({'name': relative_subdir, 'type': 'directory'}, skip_patterns=config.get('skip_patterns', {})):
+                                dirs_to_scan.append(subdir_path)
+                            elif logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(f"Skipping directory tree: {relative_subdir}")
                 except Exception as e:
                     logger.error(f"Error getting subdirectories for {dir_path}: {e}")
             
@@ -492,9 +527,18 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                 size_calculator = DirectorySizeCalculator(session)
                 size_calculator.update_directory_items(batch, calculate_sizes=calculate_sizes)
                 
+                # Get skip patterns from config
+                skip_patterns = config.get('skip_patterns', {}).get('directories', [])
+                
                 # Process direct links sequentially to avoid session issues
                 for item in batch:
                     try:
+                        # Skip direct link generation for files in skipped directories
+                        if skip_patterns and lucidlink_api._should_skip_path(item['relative_path'], skip_patterns):
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(f"Skipping direct link generation for {item['relative_path']} due to skip pattern")
+                            continue
+
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(f"Generating direct link for: {item['relative_path']}")
                         # Use the LucidLink fsEntry ID directly for v2 direct links
@@ -508,11 +552,8 @@ def process_lucidlink_files(session: duckdb.DuckDBPyConnection, stats: WorkflowS
                             item['direct_link'] = direct_link
                         else:
                             logger.warning(f"No direct link generated for {item['relative_path']}")
-                            item['direct_link'] = None
                     except Exception as e:
-                        logger.error(f"Failed to generate direct link for {item['relative_path']}: {e}")
-                        item['direct_link'] = None
-                
+                        logger.error(f"Error generating direct link for {item.get('relative_path', 'unknown')}: {e}")
                 processed = bulk_upsert_files(session, batch)
                 return processed
                 

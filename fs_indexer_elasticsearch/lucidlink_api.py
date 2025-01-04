@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Generator, Any, Optional
 from urllib.parse import quote
 import time
+import fnmatch
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,24 @@ class LucidLinkAPI:
         self._seen_paths = set()  # Track seen paths to avoid duplicates
         self._dir_cache = {}  # Cache for directory contents
         self._cache_ttl = 300  # Cache TTL in seconds
+
+    def _should_skip_path(self, path: str, skip_patterns: List[str]) -> bool:
+        """Check if a path should be skipped based on skip patterns"""
+        if not skip_patterns:
+            return False
+            
+        # Clean up path for consistent matching
+        clean_path = path.strip('/')
+        
+        for pattern in skip_patterns:
+            pattern = pattern.strip('/')
+            if fnmatch.fnmatch(clean_path, pattern) or \
+               fnmatch.fnmatch(clean_path, f"*/{pattern}") or \
+               fnmatch.fnmatch(clean_path, f"{pattern}/*") or \
+               fnmatch.fnmatch(clean_path, f"*/{pattern}/*"):
+                logger.debug(f"Skipping {path} due to pattern {pattern}")
+                return True
+        return False
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -185,7 +204,7 @@ class LucidLinkAPI:
                     item_path = item['name'].strip('/')
                     
                     # Skip if in skip patterns
-                    if skip_directories and any(pattern in item_path for pattern in skip_directories):
+                    if self._should_skip_path(item_path, skip_directories):
                         logger.debug(f"Skipping {item_path} due to skip pattern")
                         continue
                         
@@ -198,7 +217,7 @@ class LucidLinkAPI:
             directories = [
                 item['name'] for item in contents 
                 if item['type'] == 'directory' and 
-                not any(pattern in item['name'] for pattern in skip_directories)
+                not self._should_skip_path(item['name'], skip_directories)
             ]
             
             if directories:
@@ -239,7 +258,7 @@ class LucidLinkAPI:
                     item_path = item['name'].strip('/')
                     
                     # Skip if in skip patterns
-                    if skip_directories and any(pattern in item_path for pattern in skip_directories):
+                    if self._should_skip_path(item_path, skip_directories):
                         logger.debug(f"Skipping {item_path} due to skip pattern")
                         continue
                         
@@ -252,7 +271,7 @@ class LucidLinkAPI:
             directories = [
                 item['name'] for item in contents 
                 if item['type'] == 'directory' and 
-                not any(pattern in item['name'] for pattern in skip_directories)
+                not self._should_skip_path(item['name'], skip_directories)
             ]
             
             if directories:
