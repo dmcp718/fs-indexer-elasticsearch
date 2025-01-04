@@ -810,12 +810,14 @@ def main():
                           help='Root directory path to index')
         parser.add_argument('--mode',
                           choices=['elasticsearch', 'index-only'],
-                          default='elasticsearch',
                           help='Operation mode:\n\n  elasticsearch: index and send to ES (default)\n  index-only: only update local index')
+
         args = parser.parse_args()
 
         # Load configuration
         config = load_config(args.config)
+        
+        # CLI args override config values
         if args.root_path:
             config['root_path'] = args.root_path  # Set root path from command line
             logger.info(f"Using root path from command line: {args.root_path}")
@@ -826,7 +828,13 @@ def main():
             
         if args.mode:
             config['mode'] = args.mode
-
+            logger.info(f"Using mode from command line: {args.mode}")
+        elif config.get('mode'):
+            logger.info(f"Using mode from config file: {config['mode']}")
+        else:
+            config['mode'] = 'elasticsearch'  # Default if not specified in CLI or config
+            logger.info("Using default mode: elasticsearch")
+            
         # Configure logging
         configure_logging(config)
         
