@@ -810,8 +810,11 @@ def main():
                           metavar='PATH',
                           help='Root directory path to index')
         parser.add_argument('--mode',
+                          metavar='MODE',
                           choices=['elasticsearch', 'index-only'],
-                          help='Operation mode:\n\n  elasticsearch: index and send to ES (default)\n  index-only: only update local index')
+                          help='Operation mode (elasticsearch or index-only):\n'
+                               '  elasticsearch: index and send to ES (default)\n'
+                               '  index-only: only update local index')
 
         args = parser.parse_args()
 
