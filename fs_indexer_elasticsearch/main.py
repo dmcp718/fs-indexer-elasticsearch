@@ -141,10 +141,15 @@ async def main() -> int:
         # Initialize Elasticsearch if needed
         if mode == 'elasticsearch':
             try:
-                # Get root path name for index
-                root_name = root_path.strip('/').replace('/', '-').lower() if root_path else ''
+                # Get filespace name for index
+                filespace_name = None
+                if config.get('lucidlink_filespace', {}).get('enabled'):
+                    filespace_name = config['lucidlink_filespace'].get('name')  # Use the name field which is already formatted
                 
-                # Construct index name based on root path
+                # Use filespace name for index if available
+                root_name = filespace_name if filespace_name else ''
+                
+                # Create index name
                 es_config = config.get('elasticsearch', {})
                 index_name = f"{es_config.get('index_name', 'filespace')}-{root_name}" if root_name else es_config.get('index_name', 'filespace')
                 

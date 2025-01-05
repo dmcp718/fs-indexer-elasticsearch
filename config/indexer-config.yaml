@@ -108,27 +108,17 @@ database:
       index_types: ["last_updated", "fsentry_id"]
 
 # =============================================
-# Performance tuning
+# Performance configuration
 # =============================================
 performance:
-  # Database settings
-  batch_size: 10000
-  db_pool_size: 1
-  db_max_overflow: 0
-  read_buffer_size: 268435456
-  max_workers: 32
-  
-  # Memory settings
-  mmap_size: 2147483648
-  
-  # File scanning
-  scan_chunk_size: 25000  # Adjusted for our dataset size
-  parallel_scan: true
-  
-  # Query optimization
-  enable_parallel_scan: true
-  vacuum_threshold: 10000
-  stats_update_frequency: 5000
+  # Batch sizes for different operations
+  batch_sizes:
+    direct_links: 10000
+    elasticsearch: 50000
+    scan: 100000
+    
+  # File scanning settings
+  scan_chunk_size: 25000  # Size of batches for file scanning
   
   # Progress reporting
   progress_interval_seconds: 5
@@ -136,43 +126,8 @@ performance:
   show_memory_stats: true
 
 # =============================================
-# Logging configuration
-# =============================================
-logging:
-  # Log level options (from most to least verbose):
-  # - "DEBUG": Shows file processing details, API responses, and debug info
-  # - "INFO": Shows progress updates, batch processing, and summary stats
-  # - "WARNING": Shows when some files in a batch couldn't be processed
-  # - "ERROR": Shows only errors that prevent processing
-  level: "INFO"
-  
-  # File logging settings
-  file:
-    enabled: true
-    path: "logs/fs-indexer.log"
-    max_size_mb: 10
-    backup_count: 5
-    
-  # Console logging settings
-  console:
-    enabled: true
-    show_timestamps: true
-    color: true
-    
-  # Performance logging
-  performance:
-    enabled: true
-    interval_seconds: 60
-    include_memory: true
-    include_disk: true
-
-# Checksum calculation mode
-# - sync: Calculate checksums immediately (slower indexing)
-# - async: Queue checksums for background processing (faster indexing)
-# - disabled: Skip checksum calculation
-checksum_mode: disabled
-
 # Redis configuration for async operations
+# =============================================
 redis:
   host: localhost
   port: 16379
@@ -215,3 +170,40 @@ skip_patterns:
     - '.lucid_audit'
     - '.Trash*'
     - '.Spotlight*'
+
+# =============================================
+# Logging configuration
+# =============================================
+logging:
+  # Log level options (from most to least verbose):
+  # - "DEBUG": Shows file processing details, API responses, and debug info
+  # - "INFO": Shows progress updates, batch processing, and summary stats
+  # - "WARNING": Shows when some files in a batch couldn't be processed
+  # - "ERROR": Shows only errors that prevent processing
+  level: "INFO"
+  
+  # File logging settings
+  file:
+    enabled: true
+    path: "logs/fs-indexer.log"
+    max_size_mb: 10
+    backup_count: 5
+    
+  # Console logging settings
+  console:
+    enabled: true
+    show_timestamps: true
+    color: true
+    
+  # Performance logging
+  performance:
+    enabled: true
+    interval_seconds: 60
+    include_memory: true
+    include_disk: true
+
+# Checksum calculation mode
+# - sync: Calculate checksums immediately (slower indexing)
+# - async: Queue checksums for background processing (faster indexing)
+# - disabled: Skip checksum calculation
+checksum_mode: disabled
