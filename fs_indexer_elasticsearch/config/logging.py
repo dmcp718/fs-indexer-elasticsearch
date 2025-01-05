@@ -3,8 +3,8 @@ import logging
 import logging.handlers
 from typing import Dict, Any
 
-def configure_logging(config: Dict[str, Any]):
-    """Configure logging with both file and console handlers."""
+def configure_logging(config: Dict[str, Any]) -> None:
+    """Configure logging based on config."""
     log_config = config.get('logging', {})
     log_level = getattr(logging, log_config.get('level', 'INFO'))
     log_file = log_config.get('file', 'logs/fs-indexer.log')
@@ -18,10 +18,14 @@ def configure_logging(config: Dict[str, Any]):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
     # Clear any existing handlers
+    root_logger = logging.getLogger()
     root_logger.handlers = []
 
     # File handler
@@ -44,5 +48,9 @@ def configure_logging(config: Dict[str, Any]):
         )
         console_handler.setFormatter(console_formatter)
         root_logger.addHandler(console_handler)
+
+    # Set elasticsearch logger to WARNING to reduce verbosity
+    logging.getLogger('elasticsearch').setLevel(logging.WARNING)
+    logging.getLogger('elastic_transport').setLevel(logging.WARNING)
 
     return root_logger

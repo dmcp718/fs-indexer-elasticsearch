@@ -69,14 +69,16 @@ class DirectLinkManager:
         2. Convert results to Arrow table for efficient data transfer
         3. Perform upsert operation in a transaction
         """
+        if not items:
+            return
+
+        # Log only for first batch or if batch size changes
+        if not hasattr(self, '_last_batch_size') or self._last_batch_size != len(items):
+            logger.info(f"Processing direct links in batches of {len(items)}...")
+            self._last_batch_size = len(items)
+
         try:
             results = []
-            if not items:
-                return
-            
-            logger.info(f"Processing direct links for {len(items)} items...")
-            
-            # Process each item
             for item in items:
                 try:
                     # Log item type for debugging
