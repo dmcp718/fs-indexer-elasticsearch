@@ -1,0 +1,66 @@
+# Configuration for the file indexer
+
+# LucidLink Filespace configuration
+lucidlink_filespace:
+  enabled: true
+  get_direct_links: false  # Disable direct links for testing
+  lucidlink_version: 3
+  port: 9778
+  calculate_directory_sizes: false  # Disable for testing
+  mount_point: "/Volumes/dmpfs/production"
+  
+  v3_settings:
+    max_concurrent_requests: 4
+    retry_attempts: 5
+    retry_delay_seconds: 0.5
+    batch_size: 10000
+    queue_size: 10000
+
+# Root path to start indexing from
+root_path: "/Volumes/dmpfs/production"
+
+# Operation Mode - use index-only to avoid Elasticsearch
+mode: index-only
+
+# Database configuration
+database:
+  enabled: true
+  connection:
+    url: "duckdb:///data/fs_index.duckdb"
+    options:
+      memory_limit: "4GB"
+      threads: 4
+      temp_directory: "./.tmp"
+      checkpoint_on_shutdown: true
+      compression: "lz4"
+
+# Performance configuration
+performance:
+  batch_sizes:
+    scan: 25000
+    direct_links: 50000
+    elasticsearch: 10000
+    
+  # Enable parallel processing for testing
+  parallel_processing:
+    enabled: true
+    max_workers: 4  # Use 4 workers
+    batch_size: 1000
+    
+  # Queue sizes for different operations  
+  queue_sizes:
+    scan: 10000
+    direct_links: 10000
+    
+# Skip patterns configuration  
+skip_patterns:
+  enabled: true
+  hidden_files: true
+  hidden_dirs: true
+  patterns:
+    - "*.tmp"
+    - "*.temp"
+    - "*.log"
+    - ".git"
+    - ".svn"
+    - "__pycache__"
