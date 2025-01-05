@@ -23,7 +23,11 @@ class FileScanner:
         self.config = config
         self.mode = mode
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
+        
+        # Initialize database only if enabled
         self.conn = None
+        if config.get('database', {}).get('enabled', True):
+            self._init_db()
         
         # Get mount point and paths
         self.mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
@@ -45,7 +49,7 @@ class FileScanner:
             return f"data/{filespace}_index.duckdb"
         return "data/fs_index.duckdb"
         
-    def setup_database(self):
+    def _init_db(self):
         """Setup DuckDB database with optimizations."""
         # Connect to database
         self.conn = duckdb.connect(self._get_db_path())
@@ -85,8 +89,11 @@ class FileScanner:
         self.conn.execute("SET memory_limit='4GB'")
         self.conn.execute("PRAGMA threads=8")
         
-        return self.conn
-        
+    def setup_database(self):
+        """Setup database if not already initialized."""
+        if not self.conn and self.config.get('database', {}).get('enabled', True):
+            self._init_db()
+            
     def _should_skip_path(self, path: str) -> bool:
         """Check if a path should be skipped based on config patterns.
         
@@ -222,7 +229,16 @@ class FileScanner:
             
     def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
         """Process a batch of file entries."""
+        if not batch:
+            return
+            
+        if not self.config.get('database', {}).get('enabled', True):
+            return  # Skip database operations if disabled
+            
         try:
+            if not self.conn:
+                self._init_db()
+                
             # Convert batch to Arrow table
             arrow_table = pa.Table.from_pylist(batch)
             

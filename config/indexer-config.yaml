@@ -6,7 +6,7 @@ lucidlink_filespace:
   # Enable direct link generation
   get_direct_links: true
   # LucidLink filespace version (2 or 3)
-  lucidlink_version: 3
+  lucidlink_version: 2
   # LucidLink port
   port: 9778
   # Calculate directory sizes (may slow down processing)
@@ -63,7 +63,7 @@ elasticsearch:
 # Available modes:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
-mode: elasticsearch
+mode: index-only
 
 # =============================================
 # Database configuration
@@ -73,7 +73,7 @@ database:
     url: "duckdb:///data/fs_index.duckdb"
     options:
       memory_limit: "4GB"
-      threads: 4
+      threads: 10
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
       compression: "lz4"
@@ -101,7 +101,7 @@ performance:
   # Parallel processing settings
   parallel_processing:
     enabled: true
-    max_workers: 4  # Number of parallel workers (default: number of CPU cores)
+    max_workers: 10  # Number of parallel workers (default: number of CPU cores)
     batch_size: 100000  # Maximum files per batch
     
   # File scanning settings

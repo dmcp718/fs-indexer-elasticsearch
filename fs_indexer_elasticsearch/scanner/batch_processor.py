@@ -27,33 +27,18 @@ class BatchProcessor:
         self.root_path = config.get('root_path', '/')
         
     def _build_find_command(self, directory: str) -> List[str]:
-        """Build find command with all necessary options.
+        """Build find command with skip patterns and batch size limit."""
+        cmd = [
+            'find',
+            os.path.expanduser(directory),
+            '-not', '-path', '*/.*'  # Skip hidden files and directories
+        ]
         
-        Args:
-            directory: Directory to scan
-            
-        Returns:
-            List of command arguments for find
-        """
-        # Get skip patterns from config
-        exclude_hidden = self.config.get('skip_patterns', {}).get('hidden_files', True)
-        exclude_hidden_dirs = self.config.get('skip_patterns', {}).get('hidden_dirs', True)
-        skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
-        
-        # Start find command
-        cmd = ['find', os.path.expanduser(directory)]
-        
-        # Add exclusions for hidden files/dirs
-        if exclude_hidden or exclude_hidden_dirs:
-            cmd.extend(['-not', '-path', '*/.*'])
-            
         # Add skip patterns
+        skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
         for pattern in skip_patterns:
-            # Convert glob pattern to find -path pattern
-            find_pattern = f"*/{pattern}"  # Add */ prefix to match anywhere in path
-            if not find_pattern.startswith('*/'):
-                find_pattern = f"*/{find_pattern}"
-            cmd.extend(['-not', '-path', find_pattern])
+            cmd.extend(['-not', '-path', f'*/{pattern}'])
+            cmd.extend(['-not', '-path', f'*/{pattern}/*'])  # Also skip files in matching directories
             
         # Add -ls for detailed listing
         cmd.append('-ls')
