@@ -11,6 +11,7 @@ import duckdb
 import pyarrow as pa
 import hashlib
 import os
+import fnmatch
 
 logger = logging.getLogger(__name__)
 
@@ -95,30 +96,19 @@ class FileScanner:
         
         # Get skip patterns from config
         skip_patterns = self.config.get('skip_patterns', {})
-        skip_extensions = skip_patterns.get('extensions', [])
-        skip_directories = skip_patterns.get('directories', [])
+        patterns = skip_patterns.get('patterns', [])
         
-        # Check if path is in skip directories
-        for dir_pattern in skip_directories:
-            if dir_pattern in path.split('/'):
+        # Check if path matches any skip pattern
+        for pattern in patterns:
+            if fnmatch.fnmatch(path, pattern):
                 return True
-        
-        # Check file extension
-        if path_obj.suffix:
-            # Handle both formats: with and without dot
-            extension = path_obj.suffix  # With dot
-            extension_no_dot = path_obj.suffix[1:]  # Without dot
             
-            for pattern in skip_extensions:
-                # Handle glob patterns
-                if pattern.startswith('*.'):
-                    pattern = pattern[2:]  # Remove *. from pattern
-                    if extension_no_dot == pattern:
-                        return True
-                # Handle direct matches (with or without dot)
-                elif extension == pattern or extension_no_dot == pattern:
+            # Also check each part of the path for directory patterns
+            path_parts = path.split('/')
+            for part in path_parts:
+                if fnmatch.fnmatch(part, pattern):
                     return True
-        
+                
         return False
         
     def _generate_file_id(self, relative_path: str) -> str:
@@ -338,13 +328,17 @@ class FileScanner:
     def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
         """Scan filesystem and yield file entries."""
         exclude_hidden = self.config.get('skip_patterns', {}).get('hidden_files', True)
+        exclude_hidden_dirs = self.config.get('skip_patterns', {}).get('hidden_dirs', True)
         
-        # Start find command
-        cmd = [
-            'find', 
-            os.path.expanduser(root_path),  # Expand user paths
-            '-ls'  # Get detailed listing
-        ]
+        # Start find command with exclusions
+        cmd = ['find', os.path.expanduser(root_path)]
+        
+        # Add exclusions for hidden files/dirs
+        if exclude_hidden or exclude_hidden_dirs:
+            cmd.extend(['-not', '-path', '*/.*'])
+            
+        # Add -ls for detailed listing
+        cmd.append('-ls')
         
         # Only log at debug level
         logger.debug(f"Running find command: {' '.join(cmd)}")
