@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Generator, List
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,38 @@ class ParallelFindScanner:
         self.max_workers = parallel_config.get('max_workers', min(4, multiprocessing.cpu_count()))
         self.mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
         self.root_path = config.get('root_path', '/')
+        self.debug = config.get('debug', False)
         
+        # Progress tracking
+        self._completed_dirs = 0
+        self._total_dirs = 0
+        self._total_files = 0
+        self._total_bytes = 0
+        self._last_progress = 0
+        self._start_time = 0
+        self._progress_interval = 5  # Log progress every 5 seconds
+        
+    def _log_progress(self, completed_files: int = 0):
+        """Log progress if enough time has elapsed."""
+        now = time.time()
+        if now - self._last_progress >= self._progress_interval:
+            progress = (self._completed_dirs / self._total_dirs) * 100 if self._total_dirs else 0
+            rate = self._total_files / max(1, now - self._last_progress)  # Files per second
+            logger.info(
+                f"Progress: {self._completed_dirs}/{self._total_dirs} directories "
+                f"({progress:.1f}%), {self._total_files:,} files processed "
+                f"({rate:.1f} files/sec)"
+            )
+            self._last_progress = now
+            
+    def _format_size(self, size_bytes: int) -> str:
+        """Format size in bytes to human readable string."""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} PB"
+
     def analyze_directory_structure(self, root_path: str) -> Dict[str, Any]:
         """Analyze directory structure to optimize splitting and worker allocation.
         
@@ -383,12 +415,15 @@ class ParallelFindScanner:
             List of file entry dictionaries
         """
         try:
-            # Build find command
+            # Build find command with -ls for detailed output
             cmd = [
                 'find',
                 os.path.expanduser(directory),
-                '-type', 'f',
-                '-not', '-path', '*/.*'
+                '-ls',
+                '-not', '-path', '*/.*',  # Skip hidden files
+                '-not', '-name', '.*',    # Skip hidden files by name
+                '-not', '-type', 's',     # Skip sockets
+                '-not', '-type', 'p',     # Skip pipes
             ]
             
             # Add skip patterns
@@ -398,6 +433,9 @@ class ParallelFindScanner:
                 cmd.extend(['-not', '-path', f'*/{pattern}/*'])
                 
             # Run find command
+            if self.debug:
+                logger.debug(f"Running find command: {' '.join(cmd)}")
+                
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -408,17 +446,24 @@ class ParallelFindScanner:
             
             # Process results
             entries = []
+            skipped = 0
             for line in result.stdout.splitlines():
                 try:
-                    path = line.strip()
-                    if path:
-                        entry = self._get_file_info(path)
-                        if entry:
-                            entries.append(entry)
+                    entry = self._parse_find_output(line)
+                    if entry:
+                        entries.append(entry)
+                    else:
+                        skipped += 1
                 except Exception as e:
-                    logger.error(f"Error processing file {line.strip()}: {e}")
+                    if self.debug:
+                        logger.debug(f"Error processing line: {line.strip()}")
+                        logger.debug(f"Error details: {e}")
+                    skipped += 1
                     continue
                     
+            if self.debug and skipped > 0:
+                logger.debug(f"Skipped {skipped} entries in {directory}")
+                
             return entries
             
         except subprocess.TimeoutExpired:
@@ -427,6 +472,87 @@ class ParallelFindScanner:
         except Exception as e:
             logger.error(f"Error scanning directory {directory}: {e}")
             raise
+            
+    def _parse_find_output(self, line: str) -> Dict[str, Any]:
+        """Parse find -ls output line.
+        
+        Args:
+            line: Output line from find -ls
+            
+        Returns:
+            Dictionary with file information or None if parsing fails
+        """
+        try:
+            parts = line.split()
+            if len(parts) < 11:
+                return None
+                
+            # Parse standard find -ls format
+            perms = parts[2]
+            size_str = parts[6]
+            month = parts[7]
+            day = parts[8]
+            time_or_year = parts[9]
+            name = ' '.join(parts[10:])
+            
+            try:
+                size = int(size_str)
+            except ValueError:
+                return None
+                
+            entry_type = 'directory' if perms.startswith('d') else 'file'
+            
+            # Parse timestamp with fallback
+            current_year = datetime.now().year
+            try:
+                if ':' in time_or_year:
+                    # Recent file: "Mon DD HH:MM"
+                    timestamp = datetime.strptime(f"{month} {day} {time_or_year} {current_year}", 
+                                               "%b %d %H:%M %Y")
+                    if timestamp > datetime.now():
+                        timestamp = timestamp.replace(year=current_year - 1)
+                else:
+                    # Old file: "Mon DD YYYY"
+                    timestamp = datetime.strptime(f"{month} {day} {time_or_year}", 
+                                               "%b %d %Y")
+            except ValueError:
+                # Use current time for malformed dates
+                timestamp = datetime.now()
+            
+            # Get file extension
+            extension = Path(name).suffix[1:].lower() if Path(name).suffix else ''
+            
+            # Clean up paths
+            filepath = name
+            if self.mount_point and filepath.startswith(self.mount_point):
+                filepath = filepath[len(self.mount_point):]
+                if not filepath.startswith('/'):
+                    filepath = '/' + filepath
+                    
+            relative_path = filepath
+            if self.root_path and relative_path.startswith(self.root_path):
+                relative_path = relative_path[len(self.root_path):]
+                if not relative_path.startswith('/'):
+                    relative_path = '/' + relative_path
+                
+            return {
+                'id': None,
+                'name': Path(filepath).name,
+                'relative_path': relative_path,
+                'filepath': filepath,
+                'size_bytes': size,
+                'modified_time': timestamp,
+                'creation_time': timestamp,
+                'type': entry_type,
+                'extension': extension,
+                'checksum': '',
+                'direct_link': '',
+                'last_seen': datetime.now()
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error parsing find output: {e}")
+            return None
 
     def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
         """Scan filesystem in parallel and yield file entries.
@@ -441,26 +567,56 @@ class ParallelFindScanner:
         if not directories:
             return
 
+        # Initialize progress tracking
+        self._completed_dirs = 0
+        self._total_dirs = len(directories)
+        self._total_files = 0
+        self._total_bytes = 0
+        self._start_time = time.time()
+        logger.info(f"Starting scan of {self._total_dirs} directories...")
+        
         # Track failed directories for retry
         failed_dirs = []
         retry_count = 0
-        max_retries = 2  # Maximum number of retry attempts
+        max_retries = 2
         
         while directories and retry_count <= max_retries:
-            # Create thread pool for parallel processing
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = []
+                # Submit all jobs first
+                futures = {
+                    executor.submit(self._scan_directory, d): d 
+                    for d in directories
+                }
                 
-                # Submit scan jobs
-                for directory in directories:
-                    future = executor.submit(self._scan_directory, directory)
-                    futures.append((directory, future))
-                    
                 # Process results as they complete
-                for directory, future in futures:
+                for future in futures:
+                    directory = futures[future]
                     try:
-                        # Get results with timeout
-                        results = future.result(timeout=3600)  # 1 hour timeout per directory
+                        results = future.result(timeout=3600)
+                        
+                        # Update progress
+                        self._completed_dirs += 1
+                        dir_files = len(results)
+                        dir_bytes = sum(r['size_bytes'] for r in results)
+                        self._total_files += dir_files
+                        self._total_bytes += dir_bytes
+                        
+                        # Calculate rates
+                        elapsed = time.time() - self._start_time
+                        files_per_sec = self._total_files / elapsed if elapsed > 0 else 0
+                        bytes_per_sec = self._total_bytes / elapsed if elapsed > 0 else 0
+                        
+                        # Log progress for each completed directory
+                        progress = (self._completed_dirs / self._total_dirs) * 100
+                        logger.info(
+                            f"Progress: {self._completed_dirs}/{self._total_dirs} directories "
+                            f"({progress:.1f}%), {self._total_files:,} files found "
+                            f"({self._format_size(self._total_bytes)}, "
+                            f"{files_per_sec:.1f} files/sec, "
+                            f"{self._format_size(bytes_per_sec)}/sec)"
+                        )
+                        
+                        # Yield results
                         for result in results:
                             yield result
                             
@@ -471,7 +627,7 @@ class ParallelFindScanner:
                         logger.error(f"Error scanning directory {directory}: {e}")
                         failed_dirs.append(directory)
                         
-            # If we have failed directories, retry with reduced concurrency
+            # Handle retries
             if failed_dirs:
                 retry_count += 1
                 if retry_count <= max_retries:
@@ -481,6 +637,7 @@ class ParallelFindScanner:
                         f"with {reduced_workers} workers"
                     )
                     directories = failed_dirs
+                    self._total_dirs = len(directories)
                     failed_dirs = []
                     self.max_workers = reduced_workers
                 else:
@@ -499,84 +656,58 @@ class ParallelFindScanner:
             path: File path
             
         Returns:
-            Dictionary with file information
+            Dictionary with file information or None if parsing fails
         """
         try:
-            # Parse find -ls output format
-            parts = path.split()
-            if len(parts) < 11:
-                return None
-                
-            # Get the relevant parts
-            perms = parts[2]
-            size_str = parts[6]
-            month = parts[7]
-            day = parts[8]
-            time_or_year = parts[9]
-            name = ' '.join(parts[10:])
-            
-            # Parse size
-            try:
-                size = int(size_str)
-            except ValueError:
-                return None
-                
-            # Determine type from permissions
-            entry_type = 'directory' if perms.startswith('d') else 'file'
-            
-            # Parse timestamp
-            current_year = datetime.now().year
-            try:
-                if ':' in time_or_year:
-                    # Recent file: "Mon DD HH:MM"
-                    timestamp = datetime.strptime(f"{month} {day} {time_or_year} {current_year}", 
-                                               "%b %d %H:%M %Y")
-                    if timestamp > datetime.now():
-                        timestamp = timestamp.replace(year=current_year - 1)
-                else:
-                    # Old file: "Mon DD YYYY"
-                    timestamp = datetime.strptime(f"{month} {day} {time_or_year}", 
-                                               "%b %d %Y")
-            except ValueError as e:
-                logger.error(f"Error parsing date: {month} {day} {time_or_year} - {e}")
-                timestamp = datetime.now()
-                
-            # Get file extension
-            extension = Path(name).suffix[1:].lower() if Path(name).suffix else ''
-                
-            # Get filepath (without mount point)
-            filepath = name
-            if self.mount_point:
-                if name.startswith(self.mount_point):
-                    # Remove mount point prefix
-                    filepath = name[len(self.mount_point):]
+            # For simple path, just get basic info
+            if '\n' not in path and len(path.split()) == 1:
+                filepath = path.strip()
+                if not filepath:
+                    return None
+                    
+                try:
+                    stat = os.stat(filepath)
+                    timestamp = datetime.fromtimestamp(stat.st_mtime)
+                    size = stat.st_size
+                except (OSError, ValueError) as e:
+                    logger.debug(f"Error getting file stats for {filepath}: {e}")
+                    timestamp = datetime.now()
+                    size = 0
+                    
+                # Get file extension
+                extension = Path(filepath).suffix[1:].lower() if Path(filepath).suffix else ''
+                    
+                # Get filepath (without mount point)
+                if self.mount_point and filepath.startswith(self.mount_point):
+                    filepath = filepath[len(self.mount_point):]
                     if not filepath.startswith('/'):
                         filepath = '/' + filepath
+                    
+                # Generate relative path
+                relative_path = filepath
+                if self.root_path:
+                    if relative_path.startswith(self.root_path):
+                        relative_path = relative_path[len(self.root_path):]
+                        if not relative_path.startswith('/'):
+                            relative_path = '/' + relative_path
+                    
+                return {
+                    'id': None,
+                    'name': Path(filepath).name,
+                    'relative_path': relative_path,
+                    'filepath': filepath,
+                    'size_bytes': size,
+                    'modified_time': timestamp,
+                    'creation_time': timestamp,
+                    'type': 'file',
+                    'extension': extension,
+                    'checksum': '',
+                    'direct_link': '',
+                    'last_seen': datetime.now()
+                }
                 
-            # Generate relative path
-            relative_path = filepath
-            if self.root_path:
-                # Remove root path prefix if it exists
-                if relative_path.startswith(self.root_path):
-                    relative_path = relative_path[len(self.root_path):]
-                    if not relative_path.startswith('/'):
-                        relative_path = '/' + relative_path
-                
-            return {
-                'id': None,  # Will be generated later
-                'name': Path(filepath).name,
-                'relative_path': relative_path,  # Full path relative to mount point
-                'filepath': filepath,  # Clean path for external use
-                'size_bytes': size,
-                'modified_time': timestamp,
-                'creation_time': timestamp,  # Use modified time as creation time if not available
-                'type': entry_type,
-                'extension': extension,
-                'checksum': '',  # Empty checksum for now
-                'direct_link': '',  # Will be populated by DirectLinkManager
-                'last_seen': datetime.now()
-            }
+            return None
             
         except Exception as e:
-            logger.error(f"Error parsing find output line: {e}")
+            logger.debug(f"Error parsing file info: {e}")
             return None
