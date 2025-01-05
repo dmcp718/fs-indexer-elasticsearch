@@ -55,7 +55,7 @@ lucidlink_filespace:
 # =============================================
 
 # Root path to start indexing from (optional, can be provided via --root-path argument)
-root_path: "/Volumes/dmpfs/production/00_Media"
+root_path: ""
 
 # =============================================
 # Elasticsearch configuration
@@ -81,7 +81,7 @@ elasticsearch:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
 # - lucidlink: Run in LucidLink mode with direct link support
-mode: lucidlink
+mode: elasticsearch
 
 # =============================================
 # Database configuration
@@ -90,8 +90,8 @@ database:
   connection:
     url: "duckdb:///data/fs_index.duckdb"
     options:
-      memory_limit: "4GB"
-      threads: 4
+      memory_limit: "85%"
+      threads: 10 # Adjust to less than total number of CPU cores on indexer host
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
       compression: "lz4"
@@ -111,7 +111,7 @@ database:
 # =============================================
 performance:
   # Database settings
-  batch_size: 1000
+  batch_size: 500000  # Adjust for dataset size
   db_pool_size: 1
   db_max_overflow: 0
   read_buffer_size: 268435456
@@ -125,7 +125,7 @@ performance:
   parallel_scan: true
   
   # Direct link settings
-  direct_link_batch_size: 100
+  direct_link_batch_size: 1000
   direct_link_threads: 4  # API bound, so keep low
   direct_link_queue_size: 10000
   
@@ -153,8 +153,8 @@ logging:
   # File logging settings
   file:
     enabled: true
-    path: "logs/fs-indexer.log"
-    max_size_mb: 10
+    path: "logs/indexer.log"
+    max_size_mb: 100
     backup_count: 5
     
   # Console logging settings
@@ -169,53 +169,3 @@ logging:
     interval_seconds: 60
     include_memory: true
     include_disk: true
-
-# Checksum calculation mode
-# - sync: Calculate checksums immediately (slower indexing)
-# - async: Queue checksums for background processing (faster indexing)
-# - disabled: Skip checksum calculation
-checksum_mode: disabled
-
-# Redis configuration for async operations
-redis:
-  host: localhost
-  port: 16379
-  db: 0
-  checksum_key_prefix: fs_indexer:checksum
-  checksum_ttl: 86400
-  worker:
-    batch_size: 100
-    retry_interval: 1
-    max_retries: 5
-
-# Check and remove database records for files that no longer exist
-check_missing_files: true
-
-# Skip patterns for file extensions and specific files
-skip_patterns:
-  extensions:
-    - .DS_Store
-    - .git
-    - .gitignore
-    - .svn
-    - .hg
-    - .idea
-    - __pycache__
-    - '*.pyc'
-    - '*.pyo'
-    - '*.pyd'
-    - '*.so'
-    - '*.dylib'
-    - '*.dll'
-    - '*.class'
-    - '*.o'
-    - '*.dbr'
-  
-  directories:
-    - .git
-    - .venv
-    - env
-    - .env
-    - '.lucid_audit'
-    - '.Trash*'
-    - '.Spotlight*'

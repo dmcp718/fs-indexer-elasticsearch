@@ -24,8 +24,8 @@ wheels/
 logs/
 *.log
 
-# Samples
-# kibana_api
+#workspace/
+fs-indexer-elasticsearch.code-workspace
 
 # Data
 data/
