@@ -6,7 +6,7 @@ lucidlink_filespace:
   # Enable direct link generation
   get_direct_links: true
   # LucidLink filespace version (2 or 3)
-  lucidlink_version: 2
+  lucidlink_version: 3
   # LucidLink port
   port: 9778
   # Calculate directory sizes (may slow down processing)
