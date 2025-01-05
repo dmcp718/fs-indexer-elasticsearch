@@ -135,17 +135,20 @@ async def main() -> int:
             # Initialize batches
             batch = []
             direct_link_batch = []
-            file_count = 0
-            total_size = 0
-            updated_count = 0
             
             # Process files
             if lucidlink_api:
                 async with lucidlink_api:
                     for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
-                        file_count += 1
-                        total_size += entry.get('size_bytes', 0)
-                        updated_count += 1
+                        # Update statistics based on entry type
+                        is_file = entry.get('type') == 'file'
+                        is_dir = entry.get('type') == 'directory'
+                        workflow_stats.update_stats(
+                            file_count=1 if is_file else 0,
+                            dirs=1 if is_dir else 0,
+                            updated=1,
+                            size=entry.get('size_bytes', 0)
+                        )
                         
                         # Track current files if needed
                         if current_files is not None:
@@ -175,9 +178,15 @@ async def main() -> int:
             else:
                 # Process files without LucidLink
                 for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
-                    file_count += 1
-                    total_size += entry.get('size_bytes', 0)
-                    updated_count += 1
+                    # Update statistics based on entry type
+                    is_file = entry.get('type') == 'file'
+                    is_dir = entry.get('type') == 'directory'
+                    workflow_stats.update_stats(
+                        file_count=1 if is_file else 0,
+                        dirs=1 if is_dir else 0,
+                        updated=1,
+                        size=entry.get('size_bytes', 0)
+                    )
                     
                     # Track current files if needed
                     if current_files is not None:
@@ -197,31 +206,22 @@ async def main() -> int:
             # Clean up missing files if needed
             if check_missing_files and current_files:
                 removed_count = scanner.cleanup_missing_files(current_files)
+                workflow_stats.add_removed_files(removed_count)
+                
                 if es_client:
                     # Get removed file IDs and delete from Elasticsearch
                     removed_ids = scanner.get_removed_file_ids()
                     if removed_ids:
                         es_client.delete_by_ids(removed_ids)
             
-            # Update workflow statistics
-            workflow_stats.update_stats(
-                file_count=file_count,
-                updated=updated_count,
-                size=total_size
-            )
+            # Log final statistics
+            workflow_stats.log_summary()
+
+            return 0
         except Exception as e:
             logger.error(f"Error during scanning: {e}", exc_info=True)
             workflow_stats.add_error(str(e))
             return 1
-
-        # Log final statistics
-        logger.info("Final workflow statistics:")
-        logger.info(f"Total files processed: {workflow_stats.total_files}")
-        logger.info(f"Files updated: {workflow_stats.files_updated}")
-        logger.info(f"Files removed: {workflow_stats.files_removed}")
-        logger.info(f"Total size: {workflow_stats.total_size} bytes")
-
-        return 0
 
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
