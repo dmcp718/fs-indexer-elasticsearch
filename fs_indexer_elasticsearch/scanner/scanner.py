@@ -31,6 +31,13 @@ class FileScanner:
         if not self.mount_point:
             logger.warning("No mount point configured, using absolute paths")
             
+        # Initialize parallel scanner if enabled
+        parallel_config = config.get('performance', {}).get('parallel_processing', {})
+        self.parallel_enabled = parallel_config.get('enabled', False)
+        if self.parallel_enabled:
+            from .parallel_scanner import ParallelFindScanner
+            self.parallel_scanner = ParallelFindScanner(config)
+            
     def _get_db_path(self) -> str:
         """Get database path based on filespace name."""
         if self.config.get('lucidlink_filespace', {}).get('enabled', False):
@@ -324,6 +331,13 @@ class FileScanner:
             
     def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
         """Scan filesystem and yield file entries."""
+        # Use parallel scanner if enabled
+        if self.parallel_enabled:
+            logger.info("Using parallel find scanner")
+            yield from self.parallel_scanner.scan(root_path)
+            return
+            
+        # Fall back to sequential scanning
         exclude_hidden = self.config.get('skip_patterns', {}).get('hidden_files', True)
         exclude_hidden_dirs = self.config.get('skip_patterns', {}).get('hidden_dirs', True)
         skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
