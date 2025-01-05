@@ -349,7 +349,6 @@ class FileScanner:
         """Scan filesystem and yield file entries."""
         # Use parallel scanner if enabled
         if self.parallel_enabled:
-            logger.info("Using parallel find scanner")
             yield from self.parallel_scanner.scan(root_path)
             return
             
@@ -447,18 +446,43 @@ class FileScanner:
         Returns:
             Number of files removed
         """
-        try:
-            # Mark files as removed that are not in current_files
-            self.conn.execute("""
-                DELETE FROM files 
-                WHERE relative_path NOT IN (
-                    SELECT unnest(?::VARCHAR[])
-                )
-            """, [list(current_files)])
+        if not self.conn:
+            return 0
             
-            count = self.conn.execute("SELECT changes()").fetchone()[0]
-            logger.info(f"Removed {count} missing files from database")
-            return count
+        try:
+            # Create temp table for current files
+            self.conn.execute("""
+                CREATE TEMP TABLE current_files (
+                    relative_path VARCHAR PRIMARY KEY
+                )
+            """)
+            
+            # Insert current files in batches using VALUES
+            batch_size = 1000
+            current_files_list = list(current_files)
+            for i in range(0, len(current_files_list), batch_size):
+                batch = current_files_list[i:i + batch_size]
+                # Build VALUES clause manually
+                values = ",".join(f"(?)" for _ in batch)
+                self.conn.execute(
+                    f"INSERT INTO current_files (relative_path) VALUES {values}",
+                    batch
+                )
+            
+            # Delete files that don't exist in current_files
+            removed = self.conn.execute("""
+                WITH removed AS (
+                    DELETE FROM files 
+                    WHERE relative_path NOT IN (SELECT relative_path FROM current_files)
+                    RETURNING id
+                )
+                SELECT count(*) FROM removed
+            """).fetchone()[0]
+            
+            # Cleanup
+            self.conn.execute("DROP TABLE current_files")
+            
+            return removed
             
         except Exception as e:
             logger.error(f"Error cleaning up missing files: {e}")
