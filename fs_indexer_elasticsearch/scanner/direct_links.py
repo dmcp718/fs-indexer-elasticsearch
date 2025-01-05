@@ -104,19 +104,19 @@ class DirectLinkManager:
                 for item in batch:
                     try:
                         # Skip if path matches skip patterns
-                        if any(fnmatch.fnmatch(item['filepath'], pattern) for pattern in skip_patterns):
-                            logger.debug(f"Skipping direct link generation for {item['filepath']} due to skip pattern")
+                        if any(fnmatch.fnmatch(item.get('filepath', ''), pattern) for pattern in skip_patterns):
+                            logger.debug(f"Skipping direct link generation for {item.get('filepath', '')} due to skip pattern")
                             continue
                             
                         # Log item type for debugging
-                        logger.debug(f"Processing direct link for {item['type']}: {item['filepath']}")
+                        logger.debug(f"Processing direct link for {item['type']}: {item.get('filepath', '')}")
                         
                         # Get direct link based on version
                         if self.version == 3:
                             # V3: Simple direct API call
-                            direct_link = await self.lucidlink_api.get_direct_link_v3(item['filepath'])
+                            direct_link = await self.lucidlink_api.get_direct_link_v3(item.get('filepath', ''))
                             if direct_link:
-                                logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
+                                logger.debug(f"Generated direct link for {item['type']}: {item.get('filepath', '')}")
                                 results.append({
                                     'file_id': item['id'],
                                     'direct_link': direct_link,
@@ -127,7 +127,7 @@ class DirectLinkManager:
                                 # Update the item object for Elasticsearch
                                 item['direct_link'] = direct_link
                             else:
-                                logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
+                                logger.warning(f"Failed to generate direct link for {item['type']}: {item.get('filepath', '')}")
                         else:
                             # V2: Try fast path first using cached fsentry_id
                             fsentry_id = None
@@ -146,11 +146,11 @@ class DirectLinkManager:
                             
                             # Get direct link (will use fsentry_id if available)
                             direct_link = await self.lucidlink_api.get_direct_link_v2(
-                                item['filepath'], 
+                                item.get('filepath', ''), 
                                 fsentry_id=fsentry_id
                             )
                             if direct_link:
-                                logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
+                                logger.debug(f"Generated direct link for {item['type']}: {item.get('filepath', '')}")
                                 results.append({
                                     'file_id': item['id'],
                                     'direct_link': direct_link,
@@ -161,11 +161,11 @@ class DirectLinkManager:
                                 # Update the item object for Elasticsearch
                                 item['direct_link'] = direct_link
                             else:
-                                logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
+                                logger.warning(f"Failed to generate direct link for {item['type']}: {item.get('filepath', '')}")
                     except Exception as e:
-                        logger.error(f"Error generating direct link for {item['filepath']}: {e}")
+                        logger.error(f"Error generating direct link for {item.get('filepath', '')}: {e}")
                         if "400" in str(e):  # Skip 400 errors as they're likely for unsupported files
-                            logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item['filepath']}")
+                            logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item.get('filepath', '')}")
                             continue
                         raise
 
