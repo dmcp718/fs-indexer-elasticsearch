@@ -111,7 +111,6 @@ class KibanaDataViewManager:
             "id": search_id,
             "attributes": {
                 "title": self.index_name,
-                "timeFieldName": "last_seen",
                 "fields": json.dumps(data_view["fields"]),
                 "fieldFormatMap": json.dumps(field_formats),
                 "typeMeta": "{}",
@@ -136,7 +135,6 @@ class KibanaDataViewManager:
         return {
             "title": index_pattern,
             "name": index_pattern,
-            "timeFieldName": "last_seen",
             "fields": [
                 {"name": "id", "type": "keyword", "searchable": True, "aggregatable": True},
                 {"name": "name", "type": "text", "searchable": True, "aggregatable": False},
@@ -150,8 +148,7 @@ class KibanaDataViewManager:
                 {"name": "type", "type": "keyword", "searchable": True, "aggregatable": True},
                 {"name": "extension", "type": "keyword", "searchable": True, "aggregatable": True},
                 {"name": "checksum", "type": "keyword", "searchable": True, "aggregatable": True},
-                {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True},
-                {"name": "last_seen", "type": "date", "searchable": True, "aggregatable": True}
+                {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True}
             ]
         }
 

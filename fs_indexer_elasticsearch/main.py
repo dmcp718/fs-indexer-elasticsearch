@@ -141,6 +141,15 @@ async def main() -> int:
                             direct_link_batch.append(entry)
                             if len(direct_link_batch) >= direct_link_manager.batch_size:
                                 await direct_link_manager.process_batch(direct_link_batch)
+                                # Get direct links for the batch
+                                for file in direct_link_batch:
+                                    link_result = direct_link_manager.conn.execute("""
+                                        SELECT direct_link, link_type
+                                        FROM direct_links
+                                        WHERE file_id = ?
+                                    """, [file['id']]).fetchone()
+                                    if link_result:
+                                        file['direct_link'] = link_result[0]
                                 direct_link_batch = []
                         
                         # Add to Elasticsearch batch
@@ -153,6 +162,15 @@ async def main() -> int:
                     # Process remaining direct links
                     if direct_link_manager and direct_link_batch:
                         await direct_link_manager.process_batch(direct_link_batch)
+                        # Get direct links for the remaining batch
+                        for file in direct_link_batch:
+                            link_result = direct_link_manager.conn.execute("""
+                                SELECT direct_link, link_type
+                                FROM direct_links
+                                WHERE file_id = ?
+                            """, [file['id']]).fetchone()
+                            if link_result:
+                                file['direct_link'] = link_result[0]
                     
                     # Send remaining files to Elasticsearch
                     if es_client and batch:
