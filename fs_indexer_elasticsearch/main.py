@@ -55,6 +55,7 @@ async def main() -> int:
 
         # Initialize components
         mode = config.get('mode', 'elasticsearch')
+        logger.info(f"Running in {mode} mode")
         scanner = None
         es_client = None
         lucidlink_api = None
@@ -86,10 +87,17 @@ async def main() -> int:
                     config['lucidlink_filespace']['v3_settings'] = {
                         'max_concurrent_requests': 4,
                         'retry_attempts': 5,
-                        'retry_delay_seconds': 0.5,
-                        'batch_size': 10000,
-                        'queue_size': 10000
+                        'retry_delay_seconds': 0.5
                     }
+                
+                # Get performance settings
+                perf_settings = config.get('performance', {})
+                batch_sizes = perf_settings.get('batch_sizes', {})
+                queue_sizes = perf_settings.get('queue_sizes', {})
+                
+                # Add performance settings to v3_settings for compatibility
+                v3_settings['batch_size'] = batch_sizes.get('direct_links', 50000)
+                v3_settings['queue_size'] = queue_sizes.get('direct_links', 50000)
                 
                 logger.info(f"LucidLink config: {config.get('lucidlink_filespace', {})}")
                 lucidlink_api = LucidLinkAPI(
@@ -101,9 +109,10 @@ async def main() -> int:
                 )
                 
                 # Initialize DirectLinkManager
-                direct_link_manager = DirectLinkManager(config, lucidlink_api)
-                direct_link_manager.setup_database()
-                
+                if mode == 'elasticsearch':
+                    direct_link_manager = DirectLinkManager(config, lucidlink_api)
+                    direct_link_manager.setup_database()
+
         # Initialize scanner
         scanner = FileScanner(config)
         scanner.setup_database()
@@ -164,29 +173,36 @@ async def main() -> int:
                         if current_files is not None:
                             current_files.add(entry.get('relative_path'))
                         
+                        # Skip direct links and ES in index-only mode
+                        if mode != 'elasticsearch':
+                            continue
+                        
                         # Add to direct link batch if needed
                         if direct_link_manager:  
                             direct_link_batch.append(entry)
-                            if len(direct_link_batch) >= config['lucidlink_filespace']['v3_settings']['batch_size']:
+                            if len(direct_link_batch) >= config['performance']['batch_sizes']['direct_links']:
                                 await direct_link_manager.process_batch(direct_link_batch)
                                 direct_link_batch = []
                         
                         # Add to Elasticsearch batch
                         if es_client:
                             batch.append(entry)
-                            if len(batch) >= config.get('elasticsearch', {}).get('bulk_size', 5000):
+                            if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
                                 es_client.bulk_index(batch)
                                 batch = []
                     
-                    # Process remaining direct links
-                    if direct_link_manager and direct_link_batch:
-                        await direct_link_manager.process_batch(direct_link_batch)
-                    
-                    # Process remaining Elasticsearch batch
-                    if es_client and batch:
-                        es_client.bulk_index(batch)
+                    # Skip remaining batches in index-only mode
+                    if mode == 'elasticsearch':
+                        # Process remaining direct links
+                        if direct_link_manager and direct_link_batch:
+                            await direct_link_manager.process_batch(direct_link_batch)
+                        
+                        # Process remaining Elasticsearch batch
+                        if es_client and batch:
+                            es_client.bulk_index(batch)
             else:
                 # Process files without LucidLink
+                batch = []
                 for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
                     # Update statistics based on entry type
                     is_file = entry.get('type') == 'file'
@@ -202,16 +218,22 @@ async def main() -> int:
                     if current_files is not None:
                         current_files.add(entry.get('relative_path'))
                     
+                    # Skip ES in index-only mode
+                    if mode != 'elasticsearch':
+                        continue
+                    
                     # Add to Elasticsearch batch
                     if es_client:
                         batch.append(entry)
-                        if len(batch) >= config.get('elasticsearch', {}).get('bulk_size', 5000):
+                        if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
                             es_client.bulk_index(batch)
                             batch = []
                 
-                # Process remaining Elasticsearch batch
-                if es_client and batch:
-                    es_client.bulk_index(batch)
+                # Skip remaining batch in index-only mode
+                if mode == 'elasticsearch':
+                    # Process remaining Elasticsearch batch
+                    if es_client and batch:
+                        es_client.bulk_index(batch)
             
             # Clean up missing files if needed
             if check_missing_files and current_files:
