@@ -6,10 +6,11 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Dict, Any, Optional, Generator
+from typing import Dict, Any, Optional, Generator, List
 import duckdb
 import pyarrow as pa
 import hashlib
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -34,32 +35,37 @@ class FileScanner:
         
     def setup_database(self):
         """Setup DuckDB database with optimizations."""
-        # Ensure data directory exists
-        Path('data').mkdir(exist_ok=True)
-        
         # Connect to database
         self.conn = duckdb.connect(self.db_path)
         
-        # Create tables if they don't exist
+        # Handle database setup based on mode
+        check_missing_files = self.config.get('check_missing_files', True)
+        if not check_missing_files:
+            # Drop and recreate mode - close connection and delete file
+            self.conn.close()
+            try:
+                os.remove(self.db_path)
+            except FileNotFoundError:
+                pass
+            self.conn = duckdb.connect(self.db_path)
+            
+        # Create table if not exists
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
-                id VARCHAR PRIMARY KEY,
+                id VARCHAR,
                 name VARCHAR,
-                relative_path VARCHAR,
+                relative_path VARCHAR PRIMARY KEY,
+                filepath VARCHAR,
                 size_bytes BIGINT,
                 modified_time TIMESTAMP,
                 creation_time TIMESTAMP,
                 type VARCHAR,
                 extension VARCHAR,
                 checksum VARCHAR,
+                direct_link VARCHAR,
                 last_seen TIMESTAMP
             )
         """)
-        
-        # Create indexes for better performance
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_relative_path ON files(relative_path)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_type_name ON files(type, name)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_last_seen ON files(last_seen)")
         
         # Enable optimizations
         self.conn.execute("SET enable_progress_bar=false")
@@ -177,15 +183,26 @@ class FileScanner:
             # Get file extension
             extension = Path(name).suffix[1:].lower() if Path(name).suffix else ''
                 
+            # Get filepath (without mount point)
+            filepath = name
+            if filepath.startswith('/Volumes/'):
+                # Remove /Volumes/dmpfs/production prefix
+                parts = filepath.split('/', 4)
+                if len(parts) > 4:
+                    filepath = '/' + parts[4]
+                
             return {
                 'id': self._generate_file_id(name),
                 'name': Path(name).name,
                 'relative_path': name,
+                'filepath': filepath,
                 'size_bytes': size,
                 'modified_time': timestamp,
                 'creation_time': timestamp,  # Use modified time as creation time if not available
                 'type': entry_type,
                 'extension': extension,
+                'checksum': '',  # Empty checksum for now
+                'direct_link': '',  # Will be populated by DirectLinkManager
                 'last_seen': datetime.now()
             }
             
@@ -227,15 +244,16 @@ class FileScanner:
                         WHERE files.relative_path = arrow_table.relative_path
                         AND files.modified_time >= arrow_table.modified_time
                     )
-                    ON CONFLICT(id) DO UPDATE SET
+                    ON CONFLICT(relative_path) DO UPDATE SET
                         name = excluded.name,
-                        relative_path = excluded.relative_path,
+                        filepath = excluded.filepath,
                         size_bytes = excluded.size_bytes,
                         modified_time = excluded.modified_time,
                         creation_time = excluded.creation_time,
                         type = excluded.type,
                         extension = excluded.extension,
                         checksum = excluded.checksum,
+                        direct_link = excluded.direct_link,
                         last_seen = excluded.last_seen
                     WHERE excluded.modified_time > files.modified_time
                 """)
@@ -372,8 +390,8 @@ class FileScanner:
         """
         try:
             result = self.conn.execute("""
-                SELECT name, relative_path, size_bytes, modified_time, 
-                       creation_time, type, extension, checksum, last_seen
+                SELECT name, relative_path, filepath, size_bytes, modified_time, 
+                       creation_time, type, extension, checksum, direct_link, last_seen
                 FROM files
                 WHERE relative_path = ?
             """, [relative_path]).fetchone()
@@ -382,16 +400,55 @@ class FileScanner:
                 return {
                     'name': result[0],
                     'relative_path': result[1],
-                    'size_bytes': result[2],
-                    'modified_time': result[3],
-                    'creation_time': result[4],
-                    'type': result[5],
-                    'extension': result[6],
-                    'checksum': result[7],
-                    'last_seen': result[8]
+                    'filepath': result[2],
+                    'size_bytes': result[3],
+                    'modified_time': result[4],
+                    'creation_time': result[5],
+                    'type': result[6],
+                    'extension': result[7],
+                    'checksum': result[8],
+                    'direct_link': result[9],
+                    'last_seen': result[10]
                 }
             return None
             
         except Exception as e:
             logger.error(f"Error getting file info: {e}")
             return None
+            
+    def get_removed_file_ids(self, current_files: set) -> List[str]:
+        """Get IDs of files that were removed."""
+        try:
+            # Get all files that are not in current_files
+            query = """
+                SELECT id
+                FROM files
+                WHERE relative_path NOT IN (
+                    SELECT unnest(?::VARCHAR[])
+                )
+            """
+            result = self.conn.execute(query, [list(current_files)]).fetchall()
+            return [row[0] for row in result]
+        except Exception as e:
+            logger.error(f"Error getting removed file IDs: {e}")
+            return []
+
+    def update_direct_links(self, direct_links_db: str) -> None:
+        """Update direct links from the direct links database."""
+        try:
+            # Attach direct links database
+            self.conn.execute(f"ATTACH '{direct_links_db}' as direct_links")
+            
+            # Update direct links in files table
+            self.conn.execute("""
+                UPDATE files f
+                SET direct_link = dl.direct_link
+                FROM direct_links.direct_links dl
+                WHERE f.id = dl.file_id
+            """)
+            
+            # Detach database
+            self.conn.execute("DETACH direct_links")
+            
+        except Exception as e:
+            logger.error(f"Error updating direct links: {e}")

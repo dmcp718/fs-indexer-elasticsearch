@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import urllib3
 from datetime import datetime
 from dateutil import tz
+from ..utils.size_formatter import format_size
 
 class ElasticsearchClient:
     def __init__(self, host: str, port: int, username: str, password: str, index_name: str, filespace: str):
@@ -49,75 +50,62 @@ class ElasticsearchClient:
                     },
                     "tokenizer": {
                         "path_tokenizer": {
-                            "type": "pattern",
-                            "pattern": "[/\\\\_\\.\\s]"
+                            "type": "path_hierarchy",
+                            "delimiter": "/"
                         }
-                    }
-                },
-                "mapping": {
-                    "total_fields": {
-                        "limit": 2000
                     }
                 }
             },
             "mappings": {
                 "properties": {
+                    "id": {"type": "keyword"},
                     "name": {
                         "type": "text",
-                        "analyzer": "path_analyzer",
                         "fields": {
-                            "keyword": {
-                                "type": "keyword",
-                                "ignore_above": 256
-                            }
+                            "keyword": {"type": "keyword"}
                         }
                     },
-                    "extension": {
-                        "type": "keyword"
+                    "relative_path": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {"type": "keyword"}
+                        }
                     },
                     "filepath": {
                         "type": "text",
-                        "analyzer": "path_analyzer",
                         "fields": {
-                            "keyword": {
-                                "type": "keyword",
-                                "ignore_above": 512
-                            }
-                        }
+                            "keyword": {"type": "keyword"}
+                        },
+                        "analyzer": "path_analyzer"
                     },
-                    "fsEntryId": {
-                        "type": "keyword"
-                    },
-                    "size_bytes": {
-                        "type": "long"  # Use long to handle large directory sizes
-                    },
-                    "size": {
-                        "type": "keyword"
-                    },
-                    "type": {
-                        "type": "keyword"
-                    },
-                    "checksum": {
-                        "type": "keyword",
-                        "null_value": "NULL"
-                    },
-                    "creation_time": {
-                        "type": "date"
-                    },
-                    "modified_time": {
-                        "type": "date"
-                    },
-                    "direct_link": {
-                        "type": "keyword",
-                        "null_value": "NULL"
-                    },
-                    "indexed_time": {
-                        "type": "date",
-                        "format": "strict_date_optional_time||epoch_millis"
-                    }
+                    "size_bytes": {"type": "long"},
+                    "size": {"type": "keyword"},
+                    "modified_time": {"type": "date"},
+                    "creation_time": {"type": "date"},
+                    "type": {"type": "keyword"},
+                    "extension": {"type": "keyword"},
+                    "checksum": {"type": "keyword"},
+                    "direct_link": {"type": "keyword"},
+                    "last_seen": {"type": "date"}
                 }
             }
         }
+
+    def _format_document(self, doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Format document for Elasticsearch."""
+        # Make a copy to avoid modifying original
+        formatted_doc = doc.copy()
+        
+        # Convert datetime objects to ISO format
+        for field in ['modified_time', 'creation_time', 'last_seen']:
+            if isinstance(formatted_doc.get(field), datetime):
+                formatted_doc[field] = formatted_doc[field].isoformat()
+
+        # Add human readable size
+        if 'size_bytes' in formatted_doc:
+            formatted_doc['size'] = format_size(formatted_doc['size_bytes'])
+
+        return formatted_doc
 
     def send_data(self, data: list):
         try:
@@ -179,28 +167,30 @@ class ElasticsearchClient:
             logging.error(f"Failed to search Elasticsearch: {e}")
             raise
 
-    def bulk_index(self, docs: List[Dict[str, Any]]) -> None:
-        """Bulk index documents into Elasticsearch.
-        
-        Args:
-            docs: List of documents to index
-        """
-        if not docs:
+    def bulk_index(self, documents: List[Dict[str, Any]]) -> None:
+        """Index multiple documents in bulk."""
+        if not documents:
             return
+
+        actions = []
+        for doc in documents:
+            # Format document
+            formatted_doc = self._format_document(doc)
             
+            action = {
+                '_index': self.index_name,
+                '_source': formatted_doc,
+            }
+            actions.append(action)
+
         try:
-            # Bulk index
             success, failed = helpers.bulk(
-                client=self.client,
-                actions=docs,
+                self.client,
+                actions,
                 refresh=True,
-                request_timeout=300,
-                raise_on_error=False,
-                stats_only=True
+                raise_on_error=False
             )
-            
-            logging.info(f"Indexed {success} documents, {failed} failed")
-                    
+            logging.info(f"Indexed {success} documents, {len(failed)} failed")
         except Exception as e:
-            logging.error(f"Error in bulk_index: {str(e)}")
+            logging.error(f"Failed to bulk index documents: {e}")
             raise

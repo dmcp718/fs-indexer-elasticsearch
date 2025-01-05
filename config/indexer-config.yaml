@@ -189,7 +189,7 @@ redis:
     max_retries: 5
 
 # Check and remove database records for files that no longer exist
-check_missing_files: true
+check_missing_files: false
 
 # Skip patterns for file extensions and specific files
 skip_patterns:

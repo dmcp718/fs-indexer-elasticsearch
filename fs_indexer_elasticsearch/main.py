@@ -79,11 +79,14 @@ async def main() -> int:
                 mount_point=config['lucidlink_filespace']['mount_point']
             )
 
-            # Initialize DirectLinkManager
-            direct_link_manager = DirectLinkManager(
-                config=config,
-                lucidlink_api=lucidlink_api
-            )
+            # Initialize DirectLinkManager if needed
+            direct_link_manager = None
+            if config['lucidlink_filespace'].get('enabled', False) and not config.get('skip_direct_links', False):
+                direct_link_manager = DirectLinkManager(
+                    config=config,
+                    lucidlink_api=lucidlink_api
+                )
+                direct_link_manager.setup_database()
 
             # Initialize DirectorySizeCalculator if enabled
             dir_size_calculator = None
@@ -95,15 +98,39 @@ async def main() -> int:
 
             # Initialize Elasticsearch client if needed
             if not config.get('skip_elasticsearch', False):
-                es_client = ElasticsearchClient(config.get('elasticsearch', {}))
-                kibana_manager = KibanaDataViewManager(es_client)
-                await kibana_manager.setup_data_views()
+                es_config = config.get('elasticsearch', {})
+                filespace_name = config['lucidlink_filespace'].get('name', '')
+                # Construct index name based on filespace
+                index_name = f"{es_config.get('index_name', 'filespace')}-{filespace_name}" if filespace_name else es_config.get('index_name', 'filespace')
+                es_client = ElasticsearchClient(
+                    host=es_config.get('host', 'localhost'),
+                    port=es_config.get('port', 9200),
+                    username=es_config.get('username', ''),
+                    password=es_config.get('password', ''),
+                    index_name=index_name,
+                    filespace=filespace_name
+                )
+                kibana_manager = KibanaDataViewManager(config)
+                kibana_manager.setup_kibana_views()
 
         elif mode == 'elasticsearch':
             # Initialize Elasticsearch client
-            es_client = ElasticsearchClient(config.get('elasticsearch', {}))
-            kibana_manager = KibanaDataViewManager(es_client)
-            await kibana_manager.setup_data_views()
+            es_config = config.get('elasticsearch', {})
+            # Get root path name for index
+            root_path = args.root_path or config.get('root_path', '')
+            root_name = root_path.strip('/').replace('/', '-').lower() if root_path else ''
+            # Construct index name based on root path
+            index_name = f"{es_config.get('index_name', 'filespace')}-{root_name}" if root_name else es_config.get('index_name', 'filespace')
+            es_client = ElasticsearchClient(
+                host=es_config.get('host', 'localhost'),
+                port=es_config.get('port', 9200),
+                username=es_config.get('username', ''),
+                password=es_config.get('password', ''),
+                index_name=index_name,
+                filespace=''
+            )
+            kibana_manager = KibanaDataViewManager(config)
+            kibana_manager.setup_kibana_views()
 
             # Initialize FileScanner without LucidLink components
             scanner = FileScanner(config=config)
@@ -115,14 +142,53 @@ async def main() -> int:
         # Start scanning
         if scanner:
             try:
-                result = await scanner.scan(
-                    root_path=args.root_path or config.get('root_path'),
-                    es_client=es_client
-                )
+                # Setup database
+                scanner.setup_database()
+                
+                # Get current file paths before scanning
+                check_missing_files = config.get('check_missing_files', True)
+                current_files = set() if not check_missing_files else None
+                
+                # Scan files
+                file_count = 0
+                total_size = 0
+                updated_count = 0
+                batch = []
+                
+                for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
+                    file_count += 1
+                    total_size += entry.get('size_bytes', 0)
+                    updated_count += 1
+                    
+                    # Track current files if needed
+                    if current_files is not None:
+                        current_files.add(entry.get('relative_path'))
+                    
+                    # Add to batch for Elasticsearch
+                    if es_client:
+                        batch.append(entry)
+                        if len(batch) >= config.get('elasticsearch', {}).get('bulk_size', 5000):
+                            es_client.bulk_index(batch)
+                            batch = []
+                
+                # Send remaining files to Elasticsearch
+                if es_client and batch:
+                    es_client.bulk_index(batch)
+                
+                # Clean up missing files if needed
+                if check_missing_files and current_files:
+                    removed_files = scanner.get_removed_file_ids(current_files)
+                    if removed_files and es_client:
+                        es_client.delete_by_query(removed_files)
+                
+                # Update direct links if needed
+                if direct_link_manager:
+                    direct_link_manager.update_direct_links(scanner.db_path)
+                
                 workflow_stats.update_stats(
-                    file_count=result.get('file_count', 0),
-                    updated=result.get('updated_count', 0),
-                    size=result.get('total_size', 0)
+                    file_count=file_count,
+                    updated=updated_count,
+                    size=total_size
                 )
             except Exception as e:
                 logger.error(f"Error during scanning: {e}", exc_info=True)
