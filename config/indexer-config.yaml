@@ -45,12 +45,14 @@ lucidlink_filespace:
     
   v3_settings:
     # Maximum concurrent API requests for direct links
-    max_concurrent_requests: 50
+    max_concurrent_requests: 4  # API bound, so keep low
     # Retry settings for API calls
-    retry_attempts: 3
-    retry_delay_seconds: 1
+    retry_attempts: 5
+    retry_delay_seconds: 0.5
     # Batch size for direct link requests
-    batch_size: 100
+    batch_size: 10000
+    # Queue size for async processing
+    queue_size: 10000
 
 # =============================================
 
@@ -69,7 +71,7 @@ elasticsearch:
   ssl: false
   
   # Bulk indexing settings
-  bulk_size: 5000
+  bulk_size: 50000
   max_retries: 3
   timeout_seconds: 300
   retry_on_timeout: true
@@ -110,7 +112,7 @@ database:
 # =============================================
 performance:
   # Database settings
-  batch_size: 1000
+  batch_size: 10000
   db_pool_size: 1
   db_max_overflow: 0
   read_buffer_size: 268435456
@@ -122,11 +124,6 @@ performance:
   # File scanning
   scan_chunk_size: 25000  # Adjusted for our dataset size
   parallel_scan: true
-  
-  # Direct link settings
-  direct_link_batch_size: 100
-  direct_link_threads: 4  # API bound, so keep low
-  direct_link_queue_size: 10000
   
   # Query optimization
   enable_parallel_scan: true

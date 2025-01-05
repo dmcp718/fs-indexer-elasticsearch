@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class LucidLinkAPI:
     """Handler for LucidLink Filespace API interactions"""
     
-    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None):
+    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None, v3_settings: Dict[str, Any] = None):
         """Initialize the API handler with the filespace port and mount point"""
         self.base_url = f"http://127.0.0.1:{port}/files"
         self.mount_point = mount_point
@@ -22,21 +22,29 @@ class LucidLinkAPI:
         self._request_semaphore = None
         self.session = None
         self._max_workers = max_workers
-        self._max_concurrent_requests = 20  # Increased for directory-heavy structure
-        self._retry_attempts = 3
-        self._retry_delay = 1  # seconds
+        
+        # Use v3 settings if provided
+        if v3_settings:
+            self._max_concurrent_requests = v3_settings.get('max_concurrent_requests', 50)
+            self._retry_attempts = v3_settings.get('retry_attempts', 5)
+            self._retry_delay = v3_settings.get('retry_delay_seconds', 0.5)
+        else:
+            self._max_concurrent_requests = 50  # Default for better performance
+            self._retry_attempts = 5
+            self._retry_delay = 0.5  # seconds
+            
         self.version = version
         self._filespace = filespace  # Store raw filespace name
         self._seen_paths = set()  # Track seen paths to avoid duplicates
         self._dir_cache = {}  # Cache for directory contents
-        self._cache_ttl = 300  # Cache TTL in seconds
+        self._cache_ttl = 60  # Cache TTL in seconds
         
     async def __aenter__(self):
         """Async context manager entry"""
         conn = aiohttp.TCPConnector(
-            limit=30,  # Increased for top-level parallelism
+            limit=50,  # Increased for top-level parallelism
             ttl_dns_cache=300,
-            limit_per_host=30
+            limit_per_host=50
         )
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         self.session = aiohttp.ClientSession(
@@ -44,7 +52,7 @@ class LucidLinkAPI:
             timeout=timeout,
             raise_for_status=True
         )
-        self._request_semaphore = asyncio.Semaphore(30)  # Match connector limit
+        self._request_semaphore = asyncio.Semaphore(50)  # Match connector limit
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -157,11 +165,11 @@ class LucidLinkAPI:
         """Get optimal chunk size based on directory depth"""
         depth = path.count('/')
         if depth <= 1:
-            return 30  # More parallel at top level
+            return 50  # More parallel at top level
         elif depth <= 3:
-            return 20  # Medium parallelism for middle levels
+            return 30  # Medium parallelism for middle levels
         else:
-            return 10  # Less parallelism for deep directories
+            return 20  # Less parallelism for deep directories
             
     async def traverse_filesystem(self, root_path: str = None, skip_directories: List[str] = None):
         """Traverse the filesystem and yield file/directory info"""

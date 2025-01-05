@@ -20,8 +20,9 @@ class DirectLinkManager:
         self.lucidlink_api = lucidlink_api
         self.version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
         
-        # Get batch size from performance settings
-        self.batch_size = config.get('performance', {}).get('direct_link_batch_size', 1000)
+        # Get batch size from v3 settings
+        v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
+        self.batch_size = v3_settings.get('batch_size', 1000)
         
         self.db_path = self._get_db_path()
         self.conn = None
@@ -173,40 +174,49 @@ class DirectLinkManager:
             # Attach files database
             self.conn.execute(f"ATTACH '{files_db_path}' AS files")
             
-            # Get files and directories that need direct link updates
-            query = """
-                SELECT f.* 
+            # Get total count first
+            count_query = """
+                SELECT COUNT(*) as total
                 FROM files.files f
                 LEFT JOIN direct_links dl ON f.id = dl.file_id
                 WHERE 
                     dl.file_id IS NULL 
                     OR dl.last_updated < f.modified_time
-                ORDER BY f.modified_time DESC  -- Process newest items first
             """
+            total_items = self.conn.execute(count_query).fetchone()[0]
             
-            # Use Arrow for efficient data handling
-            result = self.conn.execute(query)
-            items = result.fetch_arrow_table()
-            records = items.to_pylist()
-            
-            # Log number of items by type
-            type_counts = {}
-            for record in records:
-                type_counts[record['type']] = type_counts.get(record['type'], 0) + 1
-            logger.debug(f"Found items to process by type: {type_counts}")
-            
-            # Process in batches
-            total_items = len(records)
+            # Process in batches using OFFSET/LIMIT
             processed = 0
             last_progress_time = time.time()
             start_time = time.time()
             
-            for i in range(0, total_items, self.batch_size):
-                batch = records[i:i + self.batch_size]
-                await self.process_batch(batch)
+            while processed < total_items:
+                # Get next batch
+                query = f"""
+                    SELECT f.* 
+                    FROM files.files f
+                    LEFT JOIN direct_links dl ON f.id = dl.file_id
+                    WHERE 
+                        dl.file_id IS NULL 
+                        OR dl.last_updated < f.modified_time
+                    ORDER BY f.modified_time DESC  -- Process newest items first
+                    LIMIT {self.batch_size}
+                    OFFSET {processed}
+                """
+                
+                # Use Arrow for efficient data handling
+                result = self.conn.execute(query)
+                items = result.fetch_arrow_table()
+                records = items.to_pylist()
+                
+                if not records:
+                    break
+                    
+                # Process batch
+                await self.process_batch(records)
                 
                 # Update progress
-                processed += len(batch)
+                processed += len(records)
                 current_time = time.time()
                 if current_time - last_progress_time >= 5:
                     elapsed = current_time - start_time

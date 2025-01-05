@@ -21,7 +21,7 @@ class FileScanner:
         """Initialize scanner with configuration."""
         self.config = config
         self.mode = mode
-        self.batch_size = config.get('performance', {}).get('batch_size', 5000)
+        self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
         self.conn = None
         
         # Get mount point and paths
