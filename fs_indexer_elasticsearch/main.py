@@ -81,10 +81,15 @@ async def main() -> int:
                 logger.info("Initializing LucidLink API...")
                 
                 # Get v3 settings
-                if 'lucidlink_filespace' not in config:
-                    config['lucidlink_filespace'] = {}
-                if 'v3_settings' not in config['lucidlink_filespace']:
-                    config['lucidlink_filespace']['v3_settings'] = {}
+                v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
+                if not v3_settings:
+                    config['lucidlink_filespace']['v3_settings'] = {
+                        'max_concurrent_requests': 4,
+                        'retry_attempts': 5,
+                        'retry_delay_seconds': 0.5,
+                        'batch_size': 10000,
+                        'queue_size': 10000
+                    }
                 
                 logger.info(f"LucidLink config: {config.get('lucidlink_filespace', {})}")
                 lucidlink_api = LucidLinkAPI(
@@ -92,14 +97,11 @@ async def main() -> int:
                     mount_point=config['lucidlink_filespace'].get('mount_point', ''),
                     version=config['lucidlink_filespace'].get('lucidlink_version', 3),
                     filespace=config['lucidlink_filespace'].get('raw_name'),
-                    v3_settings=config['lucidlink_filespace'].get('v3_settings', {})
+                    v3_settings=config['lucidlink_filespace']['v3_settings']
                 )
                 
                 # Initialize DirectLinkManager
-                direct_link_manager = DirectLinkManager(
-                    config=config,
-                    lucidlink_api=lucidlink_api
-                )
+                direct_link_manager = DirectLinkManager(config, lucidlink_api)
                 direct_link_manager.setup_database()
                 
         # Initialize scanner
@@ -143,10 +145,6 @@ async def main() -> int:
             # Process files
             if lucidlink_api:
                 async with lucidlink_api:
-                    # Get batch sizes from config
-                    direct_link_batch_size = config.get('performance', {}).get('direct_link_batch_size', 1000)
-                    es_batch_size = config.get('elasticsearch', {}).get('bulk_size', 5000)
-                    
                     # Initialize batches
                     batch = []
                     direct_link_batch = []
@@ -169,14 +167,14 @@ async def main() -> int:
                         # Add to direct link batch if needed
                         if direct_link_manager:  
                             direct_link_batch.append(entry)
-                            if len(direct_link_batch) >= direct_link_batch_size:
+                            if len(direct_link_batch) >= config['lucidlink_filespace']['v3_settings']['batch_size']:
                                 await direct_link_manager.process_batch(direct_link_batch)
                                 direct_link_batch = []
                         
                         # Add to Elasticsearch batch
                         if es_client:
                             batch.append(entry)
-                            if len(batch) >= es_batch_size:
+                            if len(batch) >= config.get('elasticsearch', {}).get('bulk_size', 5000):
                                 es_client.bulk_index(batch)
                                 batch = []
                     

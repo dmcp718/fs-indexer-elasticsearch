@@ -28,10 +28,12 @@ class LucidLinkAPI:
             self._max_concurrent_requests = v3_settings.get('max_concurrent_requests', 50)
             self._retry_attempts = v3_settings.get('retry_attempts', 5)
             self._retry_delay = v3_settings.get('retry_delay_seconds', 0.5)
+            self._batch_size = v3_settings.get('batch_size', 10000)  # Use batch size from v3_settings
         else:
             self._max_concurrent_requests = 50  # Default for better performance
             self._retry_attempts = 5
             self._retry_delay = 0.5  # seconds
+            self._batch_size = 10000  # Default batch size
             
         self.version = version
         self._filespace = filespace  # Store raw filespace name

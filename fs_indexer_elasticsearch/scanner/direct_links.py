@@ -22,7 +22,7 @@ class DirectLinkManager:
         
         # Get batch size from v3 settings
         v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
-        self.batch_size = v3_settings.get('batch_size', 1000)
+        self.batch_size = v3_settings.get('batch_size', 10000)  # Default to 10000 for better performance
         
         self.db_path = self._get_db_path()
         self.conn = None
@@ -83,71 +83,75 @@ class DirectLinkManager:
 
         try:
             results = []
-            for item in items:
-                try:
-                    # Log item type for debugging
-                    logger.debug(f"Processing direct link for {item['type']}: {item['filepath']}")
-                    
-                    # Get direct link based on version
-                    if self.version == 3:
-                        # V3: Simple direct API call
-                        direct_link = await self.lucidlink_api.get_direct_link_v3(item['filepath'])
-                        if direct_link:
-                            logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
-                            results.append({
-                                'file_id': item['id'],
-                                'direct_link': direct_link,
-                                'link_type': 'v3',
-                                'fsentry_id': None,  # Not used in v3
-                                'last_updated': datetime.now()
-                            })
-                            # Update the item object for Elasticsearch
-                            item['direct_link'] = direct_link
-                        else:
-                            logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
-                    else:
-                        # V2: Try fast path first using cached fsentry_id
-                        fsentry_id = None
-                        if 'fsentry_id' in item:
-                            fsentry_id = item['fsentry_id']
-                        else:
-                            # Check cache in direct_links table
-                            cache_result = self.conn.execute("""
-                                SELECT fsentry_id 
-                                FROM direct_links 
-                                WHERE file_id = ? 
-                                AND last_updated > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
-                            """, [item['id']]).fetchone()
-                            if cache_result:
-                                fsentry_id = cache_result[0]
+            # Process items in smaller sub-batches to avoid overwhelming the API
+            for i in range(0, len(items), self.batch_size):  # Use batch size from v3 settings
+                batch = items[i:i + self.batch_size]
+                for item in batch:
+                    try:
+                        # Log item type for debugging
+                        logger.debug(f"Processing direct link for {item['type']}: {item['filepath']}")
                         
-                        # Get direct link (will use fsentry_id if available)
-                        direct_link = await self.lucidlink_api.get_direct_link_v2(
-                            item['filepath'], 
-                            fsentry_id=fsentry_id
-                        )
-                        if direct_link:
-                            logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
-                            results.append({
-                                'file_id': item['id'],
-                                'direct_link': direct_link,
-                                'link_type': 'v2',
-                                'fsentry_id': fsentry_id,
-                                'last_updated': datetime.now()
-                            })
-                            # Update the item object for Elasticsearch
-                            item['direct_link'] = direct_link
+                        # Get direct link based on version
+                        if self.version == 3:
+                            # V3: Simple direct API call
+                            direct_link = await self.lucidlink_api.get_direct_link_v3(item['filepath'])
+                            if direct_link:
+                                logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
+                                results.append({
+                                    'file_id': item['id'],
+                                    'direct_link': direct_link,
+                                    'link_type': 'v3',
+                                    'fsentry_id': None,  # Not used in v3
+                                    'last_updated': datetime.now()
+                                })
+                                # Update the item object for Elasticsearch
+                                item['direct_link'] = direct_link
+                            else:
+                                logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
                         else:
-                            logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
-                except Exception as e:
-                    logger.error(f"Error generating direct link for {item['filepath']}: {e}")
-                    
+                            # V2: Try fast path first using cached fsentry_id
+                            fsentry_id = None
+                            if 'fsentry_id' in item:
+                                fsentry_id = item['fsentry_id']
+                            else:
+                                # Check cache in direct_links table
+                                cache_result = self.conn.execute("""
+                                    SELECT fsentry_id 
+                                    FROM direct_links 
+                                    WHERE file_id = ? 
+                                    AND last_updated > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
+                                """, [item['id']]).fetchone()
+                                if cache_result:
+                                    fsentry_id = cache_result[0]
+                            
+                            # Get direct link (will use fsentry_id if available)
+                            direct_link = await self.lucidlink_api.get_direct_link_v2(
+                                item['filepath'], 
+                                fsentry_id=fsentry_id
+                            )
+                            if direct_link:
+                                logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
+                                results.append({
+                                    'file_id': item['id'],
+                                    'direct_link': direct_link,
+                                    'link_type': 'v2',
+                                    'fsentry_id': fsentry_id,
+                                    'last_updated': datetime.now()
+                                })
+                                # Update the item object for Elasticsearch
+                                item['direct_link'] = direct_link
+                            else:
+                                logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
+                    except Exception as e:
+                        logger.error(f"Error generating direct link for {item['filepath']}: {e}")
+                        
             if results:
                 # Convert to Arrow table for efficient bulk insert
                 arrow_table = pa.Table.from_pylist(results)
                 
-                # Perform upsert in transaction
+                # Begin transaction
                 self.conn.execute("BEGIN TRANSACTION")
+                
                 try:
                     self.conn.register('arrow_table', arrow_table)
                     self.conn.execute("""
