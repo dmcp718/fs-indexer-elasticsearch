@@ -1,24 +1,5 @@
 # Configuration for the file indexer
 
-# =============================================
-# Async Worker Setup Instructions
-# =============================================
-# To use async checksum calculation:
-# 1. Set checksum_mode: "async" in this config
-# 2. Start the Redis server and worker process:
-#    ./venv/bin/python3 -m fs_indexer.run_checksum_worker
-# 3. In another terminal, run the main indexer:
-#    ./venv/bin/python3 -m fs_indexer.main
-#
-# The worker will:
-# - Calculate checksums in the background
-# - Update the database automatically
-# - Handle Redis connection and recovery
-# - Process files in batches for efficiency
-#
-# Monitor the worker logs for progress and any errors
-# =============================================
-
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true
@@ -99,12 +80,8 @@ database:
       
   # Table-specific settings
   tables:
-    direct_links:
-      # Vacuum settings
-      auto_vacuum: true
-      vacuum_threshold: 10000
-      # Index settings
-      create_indexes: true
+    files:
+      name: files
       index_types: ["last_updated", "fsentry_id"]
 
 # =============================================
@@ -125,48 +102,23 @@ performance:
   show_rate_stats: true
   show_memory_stats: true
 
-# =============================================
-# Redis configuration for async operations
-# =============================================
-redis:
-  host: localhost
-  port: 16379
-  db: 0
-  checksum_key_prefix: fs_indexer:checksum
-  checksum_ttl: 86400
-  worker:
-    batch_size: 100
-    retry_interval: 1
-    max_retries: 5
-
 # Check and remove database records for files that no longer exist
 check_missing_files: false
 
-# Skip patterns for file extensions and specific files
+# Skip patterns for file scanning
 skip_patterns:
-  extensions:
-    - .DS_Store
-    - .git
-    - .gitignore
-    - .svn
-    - .hg
-    - .idea
-    - __pycache__
-    - '*.pyc'
-    - '*.pyo'
-    - '*.pyd'
-    - '*.so'
-    - '*.dylib'
-    - '*.dll'
-    - '*.class'
-    - '*.o'
-    - '*.dbr'
+  # Hidden files and directories
+  hidden_files: true
   
-  directories:
-    - .git
-    - .venv
-    - env
-    - .env
+  # Specific patterns to skip (glob format)
+  patterns:
+    - '.DS_Store'
+    - '.git'
+    - '.gitignore'
+    - '.idea'
+    - '.vscode'
+    - '__pycache__'
+    - '*.pyc'
     - '.lucid_audit'
     - '.Trash*'
     - '.Spotlight*'
@@ -201,9 +153,3 @@ logging:
     interval_seconds: 60
     include_memory: true
     include_disk: true
-
-# Checksum calculation mode
-# - sync: Calculate checksums immediately (slower indexing)
-# - async: Queue checksums for background processing (faster indexing)
-# - disabled: Skip checksum calculation
-checksum_mode: disabled
