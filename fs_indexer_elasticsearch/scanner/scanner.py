@@ -331,7 +331,7 @@ class FileScanner:
             for line in process.stdout:
                 if stop_event.is_set():
                     break
-                queue.put(line.decode().strip())
+                queue.put(line.strip())
         finally:
             queue.put(None)  # Signal end of data
             
@@ -346,14 +346,16 @@ class FileScanner:
             '-ls'  # Get detailed listing
         ]
         
-        logger.info(f"Running find command: {' '.join(cmd)}")
+        # Only log at debug level
+        logger.debug(f"Running find command: {' '.join(cmd)}")
         
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=1,
-            universal_newlines=False
+            text=True,  # Use text mode instead of binary
+            bufsize=1,  # Line buffering
+            encoding='utf-8'
         )
         
         # Setup queue and events
