@@ -329,6 +329,7 @@ class FileScanner:
         """Scan filesystem and yield file entries."""
         exclude_hidden = self.config.get('skip_patterns', {}).get('hidden_files', True)
         exclude_hidden_dirs = self.config.get('skip_patterns', {}).get('hidden_dirs', True)
+        skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
         
         # Start find command with exclusions
         cmd = ['find', os.path.expanduser(root_path)]
@@ -336,6 +337,14 @@ class FileScanner:
         # Add exclusions for hidden files/dirs
         if exclude_hidden or exclude_hidden_dirs:
             cmd.extend(['-not', '-path', '*/.*'])
+            
+        # Add skip patterns to find command
+        for pattern in skip_patterns:
+            # Convert glob pattern to find -path pattern
+            find_pattern = f"*/{pattern}"  # Add */ prefix to match anywhere in path
+            if not find_pattern.startswith('*/'):
+                find_pattern = f"*/{find_pattern}"
+            cmd.extend(['-not', '-path', find_pattern])
             
         # Add -ls for detailed listing
         cmd.append('-ls')
