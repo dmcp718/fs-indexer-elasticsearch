@@ -80,8 +80,7 @@ elasticsearch:
 # Available modes:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
-# - lucidlink: Run in LucidLink mode with direct link support
-mode: lucidlink
+mode: elasticsearch
 
 # =============================================
 # Database configuration

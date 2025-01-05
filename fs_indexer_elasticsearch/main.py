@@ -53,29 +53,31 @@ async def main() -> int:
         # Initialize workflow statistics
         workflow_stats = WorkflowStats()
 
-        # Initialize components based on mode
+        # Initialize components
         mode = config.get('mode', 'elasticsearch')
         scanner = None
         es_client = None
+        lucidlink_api = None
+        direct_link_manager = None
 
-        if mode == 'lucidlink':
+        # Initialize LucidLink components if enabled
+        if config.get('lucidlink_filespace', {}).get('enabled', False):
             # Get filespace info if not provided
             if not config.get('lucidlink_filespace', {}).get('name'):
                 filespace_raw, filespace_name, port, mount_point = get_filespace_info(config)
                 if not filespace_raw:
                     logger.error("No filespace selected")
                     return 1
-                config['lucidlink_filespace'] = {
+                config['lucidlink_filespace'].update({
                     'name': filespace_name,
                     'raw_name': filespace_raw,
                     'port': port,
                     'mount_point': mount_point,
                     'lucidlink_version': config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
-                }
+                })
 
-            # Initialize LucidLink API if needed
-            lucidlink_api = None
-            if mode == 'lucidlink' and not config.get('lucidlink_filespace', {}).get('skip_direct_links', False):
+            # Initialize LucidLink API if direct links are enabled
+            if config.get('lucidlink_filespace', {}).get('get_direct_links', False):
                 logger.info("Initializing LucidLink API...")
                 logger.info(f"LucidLink config: {config.get('lucidlink_filespace', {})}")
                 lucidlink_api = LucidLinkAPI(
@@ -85,48 +87,61 @@ async def main() -> int:
                     filespace=config['lucidlink_filespace'].get('raw_name')
                 )
                 
-                # Initialize DirectLinkManager outside the context
-                direct_link_manager = None
-                if not config.get('lucidlink_filespace', {}).get('skip_direct_links', False):
-                    direct_link_manager = DirectLinkManager(
-                        config=config,
-                        lucidlink_api=lucidlink_api
-                    )
-                    direct_link_manager.setup_database()
-                    
-                # Initialize scanner
-                scanner = FileScanner(config)
-                scanner.setup_database()
+                # Initialize DirectLinkManager
+                direct_link_manager = DirectLinkManager(
+                    config=config,
+                    lucidlink_api=lucidlink_api
+                )
+                direct_link_manager.setup_database()
                 
-                # Initialize Elasticsearch if configured
+        # Initialize scanner
+        scanner = FileScanner(config)
+        scanner.setup_database()
+
+        # Initialize Elasticsearch if needed
+        if mode == 'elasticsearch':
+            try:
+                # Get root path name for index
+                root_path = args.root_path or config.get('root_path', '')
+                root_name = root_path.strip('/').replace('/', '-').lower() if root_path else ''
+                
+                # Construct index name based on root path
                 es_config = config.get('elasticsearch', {})
-                if es_config:
-                    filespace_name = config['lucidlink_filespace'].get('name', '')
-                    # Construct index name based on filespace
-                    index_name = f"{es_config.get('index_name', 'filespace')}-{filespace_name}" if filespace_name else es_config.get('index_name', 'filespace')
-                    
-                    es_client = ElasticsearchClient(
-                        host=es_config.get('host', 'localhost'),
-                        port=es_config.get('port', 9200),
-                        username=es_config.get('username', ''),
-                        password=es_config.get('password', ''),
-                        index_name=index_name,
-                        filespace=filespace_name
-                    )
-                    kibana_manager = KibanaDataViewManager(config)
-                    kibana_manager.setup_kibana_views()
+                index_name = f"{es_config.get('index_name', 'filespace')}-{root_name}" if root_name else es_config.get('index_name', 'filespace')
                 
-                # Run scanner with LucidLink session
+                # Initialize Elasticsearch client
+                es_client = ElasticsearchClient(
+                    host=es_config.get('host', 'localhost'),
+                    port=es_config.get('port', 9200),
+                    username=es_config.get('username', ''),
+                    password=es_config.get('password', ''),
+                    index_name=index_name,
+                    filespace=config.get('lucidlink_filespace', {}).get('name', '')
+                )
+                
+                # Create Kibana data views if needed
+                kibana_manager = KibanaDataViewManager(config)
+                kibana_manager.create_data_views()
+            except Exception as e:
+                logger.error(f"Error connecting to Elasticsearch: {e}")
+                return 1
+
+        # Start scanning
+        try:
+            # Initialize tracking variables
+            check_missing_files = config.get('check_missing_files', True)
+            current_files = set() if check_missing_files else None
+            
+            # Initialize batches
+            batch = []
+            direct_link_batch = []
+            file_count = 0
+            total_size = 0
+            updated_count = 0
+            
+            # Process files
+            if lucidlink_api:
                 async with lucidlink_api:
-                    # Initialize tracking variables
-                    file_count = 0
-                    total_size = 0
-                    updated_count = 0
-                    batch = []
-                    direct_link_batch = []
-                    check_missing_files = config.get('check_missing_files', True)
-                    current_files = set() if check_missing_files else None
-                    
                     for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
                         file_count += 1
                         total_size += entry.get('size_bytes', 0)
@@ -141,15 +156,6 @@ async def main() -> int:
                             direct_link_batch.append(entry)
                             if len(direct_link_batch) >= direct_link_manager.batch_size:
                                 await direct_link_manager.process_batch(direct_link_batch)
-                                # Get direct links for the batch
-                                for file in direct_link_batch:
-                                    link_result = direct_link_manager.conn.execute("""
-                                        SELECT direct_link, link_type
-                                        FROM direct_links
-                                        WHERE file_id = ?
-                                    """, [file['id']]).fetchone()
-                                    if link_result:
-                                        file['direct_link'] = link_result[0]
                                 direct_link_batch = []
                         
                         # Add to Elasticsearch batch
@@ -162,141 +168,50 @@ async def main() -> int:
                     # Process remaining direct links
                     if direct_link_manager and direct_link_batch:
                         await direct_link_manager.process_batch(direct_link_batch)
-                        # Get direct links for the remaining batch
-                        for file in direct_link_batch:
-                            link_result = direct_link_manager.conn.execute("""
-                                SELECT direct_link, link_type
-                                FROM direct_links
-                                WHERE file_id = ?
-                            """, [file['id']]).fetchone()
-                            if link_result:
-                                file['direct_link'] = link_result[0]
                     
-                    # Send remaining files to Elasticsearch
+                    # Process remaining Elasticsearch batch
                     if es_client and batch:
                         es_client.bulk_index(batch)
-                    
-                    # Update workflow statistics
-                    workflow_stats.update_stats(
-                        file_count=file_count,
-                        updated=updated_count,
-                        size=total_size
-                    )
-            elif mode == 'elasticsearch':
-                # Initialize Elasticsearch client
-                es_config = config.get('elasticsearch', {})
-                if es_config:
-                    filespace_name = config['lucidlink_filespace'].get('name', '')
-                    # Construct index name based on filespace
-                    index_name = f"{es_config.get('index_name', 'filespace')}-{filespace_name}" if filespace_name else es_config.get('index_name', 'filespace')
-                    
-                    es_client = ElasticsearchClient(
-                        host=es_config.get('host', 'localhost'),
-                        port=es_config.get('port', 9200),
-                        username=es_config.get('username', ''),
-                        password=es_config.get('password', ''),
-                        index_name=index_name,
-                        filespace=filespace_name
-                    )
-                    kibana_manager = KibanaDataViewManager(config)
-                    kibana_manager.setup_kibana_views()
-                    
-                    # Initialize scanner
-                    scanner = FileScanner(config)
-                    scanner.setup_database()
-                    
-                    # Run scanner
-                    await scanner.scan_with_elasticsearch(es_client)
-                else:
-                    logger.error("Elasticsearch configuration missing")
-                    return 1
             else:
-                # Initialize scanner without LucidLink components
-                scanner = FileScanner(config)
-                scanner.setup_database()
+                # Process files without LucidLink
+                for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
+                    file_count += 1
+                    total_size += entry.get('size_bytes', 0)
+                    updated_count += 1
+                    
+                    # Track current files if needed
+                    if current_files is not None:
+                        current_files.add(entry.get('relative_path'))
+                    
+                    # Add to Elasticsearch batch
+                    if es_client:
+                        batch.append(entry)
+                        if len(batch) >= config.get('elasticsearch', {}).get('bulk_size', 5000):
+                            es_client.bulk_index(batch)
+                            batch = []
                 
-                # Run scanner
-                await scanner.scan()
-
-        elif mode == 'elasticsearch':
-            # Initialize Elasticsearch client
-            es_config = config.get('elasticsearch', {})
-            # Get root path name for index
-            root_path = args.root_path or config.get('root_path', '')
-            root_name = root_path.strip('/').replace('/', '-').lower() if root_path else ''
-            # Construct index name based on root path
-            index_name = f"{es_config.get('index_name', 'filespace')}-{root_name}" if root_name else es_config.get('index_name', 'filespace')
-            es_client = ElasticsearchClient(
-                host=es_config.get('host', 'localhost'),
-                port=es_config.get('port', 9200),
-                username=es_config.get('username', ''),
-                password=es_config.get('password', ''),
-                index_name=index_name,
-                filespace=''
+                # Process remaining Elasticsearch batch
+                if es_client and batch:
+                    es_client.bulk_index(batch)
+            
+            # Clean up missing files if needed
+            if check_missing_files and current_files:
+                removed_count = scanner.cleanup_missing_files(current_files)
+                if es_client:
+                    # Get removed file IDs and delete from Elasticsearch
+                    removed_ids = scanner.get_removed_file_ids()
+                    if removed_ids:
+                        es_client.delete_by_ids(removed_ids)
+            
+            # Update workflow statistics
+            workflow_stats.update_stats(
+                file_count=file_count,
+                updated=updated_count,
+                size=total_size
             )
-            kibana_manager = KibanaDataViewManager(config)
-            kibana_manager.setup_kibana_views()
-
-            # Initialize FileScanner without LucidLink components
-            scanner = FileScanner(config=config)
-
-            # Start scanning
-            if scanner:
-                try:
-                    # Setup database
-                    scanner.setup_database()
-                    
-                    # Get current file paths before scanning
-                    check_missing_files = config.get('check_missing_files', True)
-                    current_files = set() if check_missing_files else None
-                    
-                    # Scan files
-                    file_count = 0
-                    total_size = 0
-                    updated_count = 0
-                    batch = []
-                    
-                    for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
-                        file_count += 1
-                        total_size += entry.get('size_bytes', 0)
-                        updated_count += 1
-                        
-                        # Track current files if needed
-                        if current_files is not None:
-                            current_files.add(entry.get('relative_path'))
-                        
-                        # Add to batch for Elasticsearch
-                        if es_client:
-                            batch.append(entry)
-                            if len(batch) >= config.get('elasticsearch', {}).get('bulk_size', 5000):
-                                es_client.bulk_index(batch)
-                                batch = []
-                    
-                    # Send remaining files to Elasticsearch
-                    if es_client and batch:
-                        es_client.bulk_index(batch)
-                    
-                    # Clean up missing files if needed
-                    if check_missing_files and current_files:
-                        removed_count = scanner.cleanup_missing_files(current_files)
-                        if es_client:
-                            # Get removed file IDs and delete from Elasticsearch
-                            removed_ids = scanner.get_removed_file_ids()
-                            if removed_ids:
-                                es_client.delete_by_ids(removed_ids)
-                    
-                    workflow_stats.update_stats(
-                        file_count=file_count,
-                        updated=updated_count,
-                        size=total_size
-                    )
-                except Exception as e:
-                    logger.error(f"Error during scanning: {e}", exc_info=True)
-                    workflow_stats.add_error(str(e))
-                    return 1
-
-        else:
-            logger.error(f"Unsupported mode: {mode}")
+        except Exception as e:
+            logger.error(f"Error during scanning: {e}", exc_info=True)
+            workflow_stats.add_error(str(e))
             return 1
 
         # Log final statistics
@@ -305,10 +220,6 @@ async def main() -> int:
         logger.info(f"Files updated: {workflow_stats.files_updated}")
         logger.info(f"Files removed: {workflow_stats.files_removed}")
         logger.info(f"Total size: {workflow_stats.total_size} bytes")
-        if workflow_stats.errors:
-            logger.info("\nErrors encountered:")
-            for error in workflow_stats.errors:
-                logger.error(error)
 
         return 0
 

@@ -34,9 +34,8 @@ class FileScanner:
         logger.info(f"Root path: {self.root_path}")
 
     def _get_db_path(self) -> str:
-        """Get database path based on filespace name and mode."""
-        mode = self.config.get('mode', 'index-only')
-        if mode == 'lucidlink':
+        """Get database path based on filespace name."""
+        if self.config.get('lucidlink_filespace', {}).get('enabled', False):
             filespace = self.config.get('lucidlink_filespace', {}).get('name', 'default')
             return f"data/{filespace}_index.duckdb"
         return "data/fs_index.duckdb"
