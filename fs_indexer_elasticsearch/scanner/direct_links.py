@@ -8,6 +8,7 @@ from typing import Dict, Any, List
 import duckdb
 import pyarrow as pa
 import os
+import fnmatch
 from ..lucidlink.lucidlink_api import LucidLinkAPI
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class DirectLinkManager:
             logger.error(f"Error reconnecting to database: {e}")
             raise
 
-    async def process_batch(self, items: List[Dict[str, Any]]):
+    async def process_batch(self, items: List[Dict[str, Any]]) -> None:
         """Process a batch of files and directories to get their direct links.
         
         The bulk insert flow:
@@ -91,18 +92,22 @@ class DirectLinkManager:
         if not items:
             return
 
-        # Log only for first batch or if batch size changes
-        if not hasattr(self, '_last_batch_size') or self._last_batch_size != len(items):
-            logger.info(f"Processing direct links in batches of {len(items)}...")
-            self._last_batch_size = len(items)
-
+        logger.info(f"Processing direct links in batches of {len(items)}...")
         try:
             results = []
+            # Get skip patterns
+            skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
+            
             # Process items in smaller sub-batches to avoid overwhelming the API
             for i in range(0, len(items), self.batch_size):  # Use batch size from performance settings
                 batch = items[i:i + self.batch_size]
                 for item in batch:
                     try:
+                        # Skip if path matches skip patterns
+                        if any(fnmatch.fnmatch(item['filepath'], pattern) for pattern in skip_patterns):
+                            logger.debug(f"Skipping direct link generation for {item['filepath']} due to skip pattern")
+                            continue
+                            
                         # Log item type for debugging
                         logger.debug(f"Processing direct link for {item['type']}: {item['filepath']}")
                         
