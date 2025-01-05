@@ -104,6 +104,7 @@ class KibanaDataViewManager:
     def _create_index_pattern(self, search_id: str) -> Dict:
         """Create an index pattern object."""
         field_formats = self._create_field_formats()
+        data_view = self._create_data_view_object(search_id)
         
         return {
             "type": "index-pattern",
@@ -111,7 +112,7 @@ class KibanaDataViewManager:
             "attributes": {
                 "title": self.index_name,
                 "timeFieldName": "last_seen",
-                "fields": self._create_data_view_object(search_id)["data_view"]["fields"],
+                "fields": json.dumps(data_view["fields"]),
                 "fieldFormatMap": json.dumps(field_formats),
                 "typeMeta": "{}",
                 "defaultSearchId": search_id
@@ -133,27 +134,25 @@ class KibanaDataViewManager:
     def _create_data_view_object(self, index_pattern: str) -> Dict[str, Any]:
         """Create data view object with field mappings."""
         return {
-            "data_view": {
-                "title": index_pattern,
-                "name": index_pattern,
-                "timeFieldName": "last_seen",
-                "fields": [
-                    {"name": "id", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "name", "type": "text", "searchable": True, "aggregatable": False},
-                    {"name": "name.keyword", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "filepath", "type": "text", "searchable": True, "aggregatable": False},
-                    {"name": "filepath.keyword", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "size_bytes", "type": "long", "searchable": True, "aggregatable": True},
-                    {"name": "size", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "modified_time", "type": "date", "searchable": True, "aggregatable": True},
-                    {"name": "creation_time", "type": "date", "searchable": True, "aggregatable": True},
-                    {"name": "type", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "extension", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "checksum", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True},
-                    {"name": "last_seen", "type": "date", "searchable": True, "aggregatable": True}
-                ]
-            }
+            "title": index_pattern,
+            "name": index_pattern,
+            "timeFieldName": "last_seen",
+            "fields": [
+                {"name": "id", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "name", "type": "text", "searchable": True, "aggregatable": False},
+                {"name": "name.keyword", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "filepath", "type": "text", "searchable": True, "aggregatable": False},
+                {"name": "filepath.keyword", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "size_bytes", "type": "long", "searchable": True, "aggregatable": True},
+                {"name": "size", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "modified_time", "type": "date", "searchable": True, "aggregatable": True},
+                {"name": "creation_time", "type": "date", "searchable": True, "aggregatable": True},
+                {"name": "type", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "extension", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "checksum", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "last_seen", "type": "date", "searchable": True, "aggregatable": True}
+            ]
         }
 
     def _create_search_object(self, search_id: str) -> Dict:
