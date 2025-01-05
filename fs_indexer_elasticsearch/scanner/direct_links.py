@@ -71,8 +71,12 @@ class DirectLinkManager:
         """
         try:
             results = []
-            if items:
-                logger.info("Processing direct links...")
+            if not items:
+                return
+            
+            logger.info(f"Processing direct links for {len(items)} items...")
+            
+            # Process each item
             for item in items:
                 try:
                     # Log item type for debugging
@@ -145,10 +149,11 @@ class DirectLinkManager:
                         SELECT * FROM arrow_table
                     """)
                     self.conn.execute("COMMIT")
+                    logger.info(f"Generated {len(results)} direct links")
                 except Exception as e:
                     self.conn.execute("ROLLBACK")
-                    raise e
-                
+                    logger.error(f"Error updating direct links database: {e}")
+                    raise
         except Exception as e:
             logger.error(f"Error processing direct links batch: {e}")
             

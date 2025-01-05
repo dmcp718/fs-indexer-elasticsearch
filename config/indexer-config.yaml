@@ -22,8 +22,8 @@
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true
-  # Skip generating direct links for files (faster indexing)
-  skip_direct_links: false
+  # Enable direct link generation
+  get_direct_links: true
   # LucidLink filespace version (2 or 3)
   lucidlink_version: 3
   # LucidLink port
