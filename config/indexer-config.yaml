@@ -94,9 +94,15 @@ database:
 performance:
   # Batch sizes for different operations
   batch_sizes:
-    direct_links: 10000
-    elasticsearch: 50000
-    scan: 100000
+    scan: 25000
+    direct_links: 50000
+    elasticsearch: 10000
+    
+  # Parallel processing settings
+  parallel_processing:
+    enabled: true
+    max_workers: 4  # Number of parallel workers (default: number of CPU cores)
+    batch_size: 100000  # Maximum files per batch
     
   # File scanning settings
   scan_chunk_size: 25000  # Size of batches for file scanning
