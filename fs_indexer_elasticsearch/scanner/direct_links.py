@@ -71,17 +71,19 @@ class DirectLinkManager:
         """
         try:
             results = []
+            if items:
+                logger.info("Processing direct links...")
             for item in items:
                 try:
                     # Log item type for debugging
-                    logger.info(f"Processing direct link for {item['type']}: {item['filepath']}")
+                    logger.debug(f"Processing direct link for {item['type']}: {item['filepath']}")
                     
                     # Get direct link based on version
                     if self.version == 3:
                         # V3: Simple direct API call
                         direct_link = await self.lucidlink_api.get_direct_link_v3(item['filepath'])
                         if direct_link:
-                            logger.info(f"Generated direct link for {item['type']}: {item['filepath']}")
+                            logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
                             results.append({
                                 'file_id': item['id'],
                                 'direct_link': direct_link,
@@ -115,7 +117,7 @@ class DirectLinkManager:
                             fsentry_id=fsentry_id
                         )
                         if direct_link:
-                            logger.info(f"Generated direct link for {item['type']}: {item['filepath']}")
+                            logger.debug(f"Generated direct link for {item['type']}: {item['filepath']}")
                             results.append({
                                 'file_id': item['id'],
                                 'direct_link': direct_link,
@@ -181,7 +183,7 @@ class DirectLinkManager:
             type_counts = {}
             for record in records:
                 type_counts[record['type']] = type_counts.get(record['type'], 0) + 1
-            logger.info(f"Found items to process by type: {type_counts}")
+            logger.debug(f"Found items to process by type: {type_counts}")
             
             # Process in batches
             total_items = len(records)
@@ -199,7 +201,7 @@ class DirectLinkManager:
                 if current_time - last_progress_time >= 5:
                     elapsed = current_time - start_time
                     rate = processed / elapsed if elapsed > 0 else 0
-                    logger.info(f"Processed {processed}/{total_items} direct links - {rate:.1f} items/s")
+                    logger.debug(f"Processed {processed}/{total_items} direct links - {rate:.1f} items/s")
                     last_progress_time = current_time
             
             duration = time.time() - start_time
