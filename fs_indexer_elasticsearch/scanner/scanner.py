@@ -31,9 +31,6 @@ class FileScanner:
         if not self.mount_point:
             logger.warning("No mount point configured, using absolute paths")
             
-        logger.info(f"Mount point: {self.mount_point}")
-        logger.info(f"Root path: {self.root_path}")
-
     def _get_db_path(self) -> str:
         """Get database path based on filespace name."""
         if self.config.get('lucidlink_filespace', {}).get('enabled', False):
@@ -191,7 +188,7 @@ class FileScanner:
             # Generate relative path
             relative_path = filepath
             if self.root_path and self.root_path != '/':
-                # Remove root path prefix
+                # Remove root path prefix if it exists
                 if relative_path.startswith(self.root_path):
                     relative_path = relative_path[len(self.root_path):]
                     if not relative_path.startswith('/'):

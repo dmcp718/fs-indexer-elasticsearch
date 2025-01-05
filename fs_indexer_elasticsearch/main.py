@@ -61,7 +61,11 @@ async def main() -> int:
         lucidlink_api = None
         direct_link_manager = None
 
-        # Initialize LucidLink components if enabled
+        # Get and normalize root path
+        root_path = args.root_path or config.get('root_path', '')
+
+        # Get mount point if LucidLink is enabled
+        mount_point = None
         if config.get('lucidlink_filespace', {}).get('enabled', False):
             # Get filespace info if not provided
             if not config.get('lucidlink_filespace', {}).get('name'):
@@ -77,10 +81,21 @@ async def main() -> int:
                     'lucidlink_version': config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
                 })
 
+            # Log mount point and root path
+            mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
+            if mount_point:
+                logger.info(f"Mount point: {mount_point}")
+                if root_path.startswith(mount_point):
+                    # Strip mount point to get relative path
+                    display_path = root_path[len(mount_point):].lstrip('/')
+                    logger.info(f"Root path (relative to mount point): {display_path or '/'}")
+                else:
+                    logger.info(f"Root path: {root_path}")
+            else:
+                logger.info(f"Root path: {root_path}")
+
             # Initialize LucidLink API if direct links are enabled
             if config.get('lucidlink_filespace', {}).get('get_direct_links', False):
-                logger.info("Initializing LucidLink API...")
-                
                 # Get v3 settings
                 v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
                 if not v3_settings:
@@ -99,15 +114,21 @@ async def main() -> int:
                 v3_settings['batch_size'] = batch_sizes.get('direct_links', 50000)
                 v3_settings['queue_size'] = queue_sizes.get('direct_links', 50000)
                 
-                logger.info(f"LucidLink config: {config.get('lucidlink_filespace', {})}")
+                # Log config without mount point and root path
+                config_log = config.get('lucidlink_filespace', {}).copy()
+                config_log.pop('mount_point', None)
+                config_log.pop('root_path', None)
+                logger.info(f"LucidLink config: {config_log}")
+                logger.info("Initializing LucidLink API...")
+                
                 lucidlink_api = LucidLinkAPI(
                     port=config['lucidlink_filespace'].get('port', 9778),
-                    mount_point=config['lucidlink_filespace'].get('mount_point', ''),
+                    mount_point=mount_point,  # Use already logged mount point
                     version=config['lucidlink_filespace'].get('lucidlink_version', 3),
                     filespace=config['lucidlink_filespace'].get('raw_name'),
                     v3_settings=config['lucidlink_filespace']['v3_settings']
                 )
-                
+
                 # Initialize DirectLinkManager
                 if mode == 'elasticsearch':
                     direct_link_manager = DirectLinkManager(config, lucidlink_api)
@@ -121,7 +142,6 @@ async def main() -> int:
         if mode == 'elasticsearch':
             try:
                 # Get root path name for index
-                root_path = args.root_path or config.get('root_path', '')
                 root_name = root_path.strip('/').replace('/', '-').lower() if root_path else ''
                 
                 # Construct index name based on root path
@@ -158,7 +178,7 @@ async def main() -> int:
                     batch = []
                     direct_link_batch = []
                     
-                    for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
+                    for entry in scanner.scan(root_path=root_path):
                         # Update statistics based on entry type
                         is_file = entry.get('type') == 'file'
                         is_dir = entry.get('type') == 'directory'
@@ -203,7 +223,7 @@ async def main() -> int:
             else:
                 # Process files without LucidLink
                 batch = []
-                for entry in scanner.scan(root_path=args.root_path or config.get('root_path')):
+                for entry in scanner.scan(root_path=root_path):
                     # Update statistics based on entry type
                     is_file = entry.get('type') == 'file'
                     is_dir = entry.get('type') == 'directory'
