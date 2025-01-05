@@ -18,10 +18,13 @@ class DirectLinkManager:
         """Initialize with configuration and LucidLink API client."""
         self.config = config
         self.lucidlink_api = lucidlink_api
+        self.version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
+        
+        # Get batch size from performance settings
         self.batch_size = config.get('performance', {}).get('direct_link_batch_size', 1000)
+        
         self.db_path = self._get_db_path()
         self.conn = None
-        self.version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
         
     def _get_db_path(self) -> str:
         """Get database path based on filespace name."""
