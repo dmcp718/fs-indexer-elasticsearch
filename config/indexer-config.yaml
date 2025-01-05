@@ -80,8 +80,12 @@ database:
       
   # Table-specific settings
   tables:
-    files:
-      name: files
+    direct_links:
+      # Vacuum settings
+      auto_vacuum: true
+      vacuum_threshold: 10000
+      # Index settings
+      create_indexes: true
       index_types: ["last_updated", "fsentry_id"]
 
 # =============================================
@@ -109,16 +113,27 @@ check_missing_files: false
 skip_patterns:
   # Hidden files and directories
   hidden_files: true
+  hidden_dirs: true
   
   # Specific patterns to skip (glob format)
   patterns:
     - '.DS_Store'
     - '.git'
     - '.gitignore'
+    - '.svn'
+    - '.hg'
     - '.idea'
     - '.vscode'
     - '__pycache__'
     - '*.pyc'
+    - '*.pyo'
+    - '*.pyd'
+    - '*.so'
+    - '*.dylib'
+    - '*.dll'
+    - '*.class'
+    - '*.o'
+    - '*.dbr'
     - '.lucid_audit'
     - '.Trash*'
     - '.Spotlight*'
