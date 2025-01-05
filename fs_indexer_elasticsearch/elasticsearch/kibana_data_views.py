@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import datetime
 import requests
 from requests.auth import HTTPBasicAuth
@@ -104,14 +104,14 @@ class KibanaDataViewManager:
     def _create_index_pattern(self, search_id: str) -> Dict:
         """Create an index pattern object."""
         field_formats = self._create_field_formats()
+        data_view = self._create_data_view_object(search_id)
         
         return {
             "type": "index-pattern",
             "id": search_id,
             "attributes": {
                 "title": self.index_name,
-                "timeFieldName": None,
-                "fields": "[]",
+                "fields": json.dumps(data_view["fields"]),
                 "fieldFormatMap": json.dumps(field_formats),
                 "typeMeta": "{}",
                 "defaultSearchId": search_id
@@ -127,6 +127,28 @@ class KibanaDataViewManager:
                     "name": "default_search",
                     "type": "search"
                 }
+            ]
+        }
+
+    def _create_data_view_object(self, index_pattern: str) -> Dict[str, Any]:
+        """Create data view object with field mappings."""
+        return {
+            "title": index_pattern,
+            "name": index_pattern,
+            "fields": [
+                {"name": "id", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "name", "type": "text", "searchable": True, "aggregatable": False},
+                {"name": "name.keyword", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "filepath", "type": "text", "searchable": True, "aggregatable": False},
+                {"name": "filepath.keyword", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "size_bytes", "type": "long", "searchable": True, "aggregatable": True},
+                {"name": "size", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "modified_time", "type": "date", "searchable": True, "aggregatable": True},
+                {"name": "creation_time", "type": "date", "searchable": True, "aggregatable": True},
+                {"name": "type", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "extension", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "checksum", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True}
             ]
         }
 

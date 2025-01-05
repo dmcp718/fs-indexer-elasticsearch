@@ -1,10 +1,29 @@
 # Configuration for the file indexer
 
+# =============================================
+# Async Worker Setup Instructions
+# =============================================
+# To use async checksum calculation:
+# 1. Set checksum_mode: "async" in this config
+# 2. Start the Redis server and worker process:
+#    ./venv/bin/python3 -m fs_indexer.run_checksum_worker
+# 3. In another terminal, run the main indexer:
+#    ./venv/bin/python3 -m fs_indexer.main
+#
+# The worker will:
+# - Calculate checksums in the background
+# - Update the database automatically
+# - Handle Redis connection and recovery
+# - Process files in batches for efficiency
+#
+# Monitor the worker logs for progress and any errors
+# =============================================
+
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true
-  # Enable direct link generation
-  get_direct_links: true
+  # Skip generating direct links for files (faster indexing)
+  skip_direct_links: false
   # LucidLink filespace version (2 or 3)
   lucidlink_version: 3
   # LucidLink port
@@ -26,19 +45,17 @@ lucidlink_filespace:
     
   v3_settings:
     # Maximum concurrent API requests for direct links
-    max_concurrent_requests: 4  # API bound, so keep low
+    max_concurrent_requests: 50
     # Retry settings for API calls
-    retry_attempts: 5
-    retry_delay_seconds: 0.5
+    retry_attempts: 3
+    retry_delay_seconds: 1
     # Batch size for direct link requests
-    batch_size: 10000
-    # Queue size for async processing
-    queue_size: 10000
+    batch_size: 100
 
 # =============================================
 
 # Root path to start indexing from (optional, can be provided via --root-path argument)
-root_path: "/Volumes/dmpfs/production/00_Media"
+root_path: ""
 
 # =============================================
 # Elasticsearch configuration
@@ -52,7 +69,7 @@ elasticsearch:
   ssl: false
   
   # Bulk indexing settings
-  bulk_size: 50000
+  bulk_size: 5000
   max_retries: 3
   timeout_seconds: 300
   retry_on_timeout: true
@@ -63,6 +80,7 @@ elasticsearch:
 # Available modes:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
+# - lucidlink: Run in LucidLink mode with direct link support
 mode: elasticsearch
 
 # =============================================
@@ -72,8 +90,8 @@ database:
   connection:
     url: "duckdb:///data/fs_index.duckdb"
     options:
-      memory_limit: "4GB"
-      threads: 4
+      memory_limit: "85%"
+      threads: 10 # Adjust to less than total number of CPU cores on indexer host
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
       compression: "lz4"
@@ -89,54 +107,37 @@ database:
       index_types: ["last_updated", "fsentry_id"]
 
 # =============================================
-# Performance configuration
+# Performance tuning
 # =============================================
 performance:
-  # Batch sizes for different operations
-  batch_sizes:
-    direct_links: 10000
-    elasticsearch: 50000
-    scan: 100000
-    
-  # File scanning settings
-  scan_chunk_size: 25000  # Size of batches for file scanning
+  # Database settings
+  batch_size: 500000  # Adjust for dataset size
+  db_pool_size: 1
+  db_max_overflow: 0
+  read_buffer_size: 268435456
+  max_workers: 32
+  
+  # Memory settings
+  mmap_size: 2147483648
+  
+  # File scanning
+  scan_chunk_size: 25000  # Adjusted for our dataset size
+  parallel_scan: true
+  
+  # Direct link settings
+  direct_link_batch_size: 1000
+  direct_link_threads: 4  # API bound, so keep low
+  direct_link_queue_size: 10000
+  
+  # Query optimization
+  enable_parallel_scan: true
+  vacuum_threshold: 10000
+  stats_update_frequency: 5000
   
   # Progress reporting
   progress_interval_seconds: 5
   show_rate_stats: true
   show_memory_stats: true
-
-# Check and remove database records for files that no longer exist
-check_missing_files: false
-
-# Skip patterns for file scanning
-skip_patterns:
-  # Hidden files and directories
-  hidden_files: true
-  hidden_dirs: true
-  
-  # Specific patterns to skip (glob format)
-  patterns:
-    - '.DS_Store'
-    - '.git'
-    - '.gitignore'
-    - '.svn'
-    - '.hg'
-    - '.idea'
-    - '.vscode'
-    - '__pycache__'
-    - '*.pyc'
-    - '*.pyo'
-    - '*.pyd'
-    - '*.so'
-    - '*.dylib'
-    - '*.dll'
-    - '*.class'
-    - '*.o'
-    - '*.dbr'
-    - '.lucid_audit'
-    - '.Trash*'
-    - '.Spotlight*'
 
 # =============================================
 # Logging configuration
@@ -152,8 +153,8 @@ logging:
   # File logging settings
   file:
     enabled: true
-    path: "logs/fs-indexer.log"
-    max_size_mb: 10
+    path: "logs/indexer.log"
+    max_size_mb: 100
     backup_count: 5
     
   # Console logging settings

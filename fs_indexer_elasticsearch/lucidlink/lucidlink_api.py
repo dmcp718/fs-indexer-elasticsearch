@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class LucidLinkAPI:
     """Handler for LucidLink Filespace API interactions"""
     
-    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None):
+    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None, v3_settings: Dict[str, Any] = None):
         """Initialize the API handler with the filespace port and mount point"""
         self.base_url = f"http://127.0.0.1:{port}/files"
         self.mount_point = mount_point
@@ -22,39 +22,31 @@ class LucidLinkAPI:
         self._request_semaphore = None
         self.session = None
         self._max_workers = max_workers
-        self._max_concurrent_requests = 20  # Increased for directory-heavy structure
-        self._retry_attempts = 3
-        self._retry_delay = 1  # seconds
+        
+        # Use v3 settings if provided
+        if v3_settings:
+            self._max_concurrent_requests = v3_settings.get('max_concurrent_requests', 50)
+            self._retry_attempts = v3_settings.get('retry_attempts', 5)
+            self._retry_delay = v3_settings.get('retry_delay_seconds', 0.5)
+            self._batch_size = v3_settings.get('batch_size', 10000)  # Use batch size from v3_settings
+        else:
+            self._max_concurrent_requests = 50  # Default for better performance
+            self._retry_attempts = 5
+            self._retry_delay = 0.5  # seconds
+            self._batch_size = 10000  # Default batch size
+            
         self.version = version
         self._filespace = filespace  # Store raw filespace name
         self._seen_paths = set()  # Track seen paths to avoid duplicates
         self._dir_cache = {}  # Cache for directory contents
-        self._cache_ttl = 300  # Cache TTL in seconds
-
-    def _should_skip_path(self, path: str, skip_patterns: List[str]) -> bool:
-        """Check if a path should be skipped based on skip patterns"""
-        if not skip_patterns:
-            return False
-            
-        # Clean up path for consistent matching
-        clean_path = path.strip('/')
-        
-        for pattern in skip_patterns:
-            pattern = pattern.strip('/')
-            if fnmatch.fnmatch(clean_path, pattern) or \
-               fnmatch.fnmatch(clean_path, f"*/{pattern}") or \
-               fnmatch.fnmatch(clean_path, f"{pattern}/*") or \
-               fnmatch.fnmatch(clean_path, f"*/{pattern}/*"):
-                logger.debug(f"Skipping {path} due to pattern {pattern}")
-                return True
-        return False
+        self._cache_ttl = 60  # Cache TTL in seconds
         
     async def __aenter__(self):
         """Async context manager entry"""
         conn = aiohttp.TCPConnector(
-            limit=30,  # Increased for top-level parallelism
+            limit=50,  # Increased for top-level parallelism
             ttl_dns_cache=300,
-            limit_per_host=30
+            limit_per_host=50
         )
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         self.session = aiohttp.ClientSession(
@@ -62,7 +54,7 @@ class LucidLinkAPI:
             timeout=timeout,
             raise_for_status=True
         )
-        self._request_semaphore = asyncio.Semaphore(30)  # Match connector limit
+        self._request_semaphore = asyncio.Semaphore(50)  # Match connector limit
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -99,11 +91,10 @@ class LucidLinkAPI:
                             return {'items': []}  # Return empty result
                         response.raise_for_status()
                         data = await response.json()
-                        logger.debug(f"API response for {path}: {data}")
                         return data
-            except aiohttp.ClientError as e:
+            except Exception as e:
                 if attempt == self._retry_attempts - 1:
-                    logger.error(f"API request failed for path {path}: {str(e)}")
+                    logger.error(f"Failed to make request to {url} after {self._retry_attempts} attempts: {e}")
                     raise
                 await asyncio.sleep(self._retry_delay * (attempt + 1))
                 
@@ -176,11 +167,11 @@ class LucidLinkAPI:
         """Get optimal chunk size based on directory depth"""
         depth = path.count('/')
         if depth <= 1:
-            return 30  # More parallel at top level
+            return 50  # More parallel at top level
         elif depth <= 3:
-            return 20  # Medium parallelism for middle levels
+            return 30  # Medium parallelism for middle levels
         else:
-            return 10  # Less parallelism for deep directories
+            return 20  # Less parallelism for deep directories
             
     async def traverse_filesystem(self, root_path: str = None, skip_directories: List[str] = None):
         """Traverse the filesystem and yield file/directory info"""
@@ -316,7 +307,7 @@ class LucidLinkAPI:
             
     async def get_direct_link(self, file_path: str) -> Optional[str]:
         """Get direct link for a file based on the configured version"""
-        if self.version == 2:
+        if self.version <= 2:
             return await self.get_direct_link_v2(file_path)
         else:
             return await self.get_direct_link_v3(file_path)
@@ -331,11 +322,11 @@ class LucidLinkAPI:
         try:
             if fsentry_id:
                 # Use provided fsentry_id directly - fast path
-                if not self.filespace:
+                if not self._filespace:
                     logger.error("Filespace name not set")
                     return None
                     
-                direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
+                direct_link = f"lucid://{self._filespace}/file/{fsentry_id}"
                 logger.debug(f"Generated v2 direct link using provided ID for {file_path}: {direct_link}")
                 return direct_link
                 
@@ -355,11 +346,11 @@ class LucidLinkAPI:
                     
                 # Construct the direct link using the fsEntry ID
                 fsentry_id = data['id']
-                if not self.filespace:
+                if not self._filespace:
                     logger.error("Filespace name not set")
                     return None
                     
-                direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
+                direct_link = f"lucid://{self._filespace}/file/{fsentry_id}"
                 logger.debug(f"Generated v2 direct link via API for {file_path}: {direct_link}")
                 return direct_link
                 
@@ -368,7 +359,7 @@ class LucidLinkAPI:
             return None
 
     async def get_direct_link_v3(self, file_path: str) -> Optional[str]:
-        """Get direct link for a file using v3 API endpoint"""
+        """Get direct link for a file or directory using v3 API endpoint"""
         try:
             if not self.session:
                 raise RuntimeError("Session not initialized")
@@ -449,3 +440,21 @@ class LucidLinkAPI:
     def get_all_files(self) -> List[Dict[str, Any]]:
         """Get all files and directories that were traversed"""
         return self._all_files
+
+    def _should_skip_path(self, path: str, skip_patterns: List[str]) -> bool:
+        """Check if a path should be skipped based on skip patterns"""
+        if not skip_patterns:
+            return False
+            
+        # Clean up path for consistent matching
+        clean_path = path.strip('/')
+        
+        for pattern in skip_patterns:
+            pattern = pattern.strip('/')
+            if fnmatch.fnmatch(clean_path, pattern) or \
+               fnmatch.fnmatch(clean_path, f"*/{pattern}") or \
+               fnmatch.fnmatch(clean_path, f"{pattern}/*") or \
+               fnmatch.fnmatch(clean_path, f"*/{pattern}/*"):
+                logger.debug(f"Skipping {path} due to pattern {pattern}")
+                return True
+        return False
