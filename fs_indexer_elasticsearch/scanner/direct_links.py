@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 import duckdb
 import pyarrow as pa
+import os
 from ..lucidlink.lucidlink_api import LucidLinkAPI
 
 logger = logging.getLogger(__name__)
@@ -20,51 +21,65 @@ class DirectLinkManager:
         self.lucidlink_api = lucidlink_api
         self.version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
         
-        # Get batch size from v3 settings
-        v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
-        self.batch_size = v3_settings.get('batch_size', 10000)  # Default to 10000 for better performance
+        # Get batch size from performance settings
+        perf_settings = config.get('performance', {}).get('batch_sizes', {})
+        self.batch_size = perf_settings.get('direct_links', 50000)
         
         self.db_path = self._get_db_path()
         self.conn = None
         
     def _get_db_path(self) -> str:
-        """Get database path based on filespace name."""
-        filespace = self.config.get('lucidlink_filespace', {}).get('name', 'default')
-        return f"data/{filespace}_directlinks.duckdb"
-        
+        """Get the path to the DuckDB database file."""
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, f'{self.config["lucidlink_filespace"]["name"]}_directlinks.duckdb')
+
     def setup_database(self):
-        """Setup direct links database with optimizations."""
-        # Ensure data directory exists
-        Path('data').mkdir(exist_ok=True)
-        
-        # Connect to database
-        self.conn = duckdb.connect(self.db_path)
-        
-        # Drop existing table and indexes
-        self.conn.execute("DROP TABLE IF EXISTS direct_links")
-        
-        # Create tables if they don't exist
-        self.conn.execute("""
-            CREATE TABLE direct_links (
-                file_id VARCHAR PRIMARY KEY,
-                direct_link VARCHAR,
-                link_type VARCHAR,  -- v2 or v3
-                fsentry_id VARCHAR NULL,  -- For v2 caching
-                last_updated TIMESTAMP
-            )
-        """)
-        
-        # Create indexes for better performance
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_last_updated ON direct_links(last_updated)")
-        
-        # Enable optimizations
-        self.conn.execute("SET enable_progress_bar=false")
-        self.conn.execute("SET temp_directory='data'")
-        self.conn.execute("SET memory_limit='4GB'")
-        self.conn.execute("PRAGMA threads=4")  # API bound, so fewer threads
-        
-        return self.conn
-        
+        """Setup the DuckDB database and create necessary tables."""
+        try:
+            self.conn = duckdb.connect(self.db_path)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS direct_links (
+                    file_id VARCHAR PRIMARY KEY,
+                    direct_link VARCHAR,
+                    link_type VARCHAR,  -- v2 or v3
+                    fsentry_id VARCHAR NULL,  -- For v2 caching
+                    last_updated TIMESTAMP
+                );
+            """)
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error setting up database: {e}")
+            self._reconnect_database()
+
+    def _reconnect_database(self):
+        """Reconnect to the database after a fatal error."""
+        try:
+            if self.conn:
+                self.conn.close()
+            # Remove WAL file if it exists
+            wal_path = f"{self.db_path}.wal"
+            if os.path.exists(wal_path):
+                try:
+                    os.remove(wal_path)
+                except OSError as e:
+                    logger.warning(f"Could not remove WAL file: {e}")
+            # Reconnect
+            self.conn = duckdb.connect(self.db_path)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS direct_links (
+                    file_id VARCHAR PRIMARY KEY,
+                    direct_link VARCHAR,
+                    link_type VARCHAR,  -- v2 or v3
+                    fsentry_id VARCHAR NULL,  -- For v2 caching
+                    last_updated TIMESTAMP
+                );
+            """)
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error reconnecting to database: {e}")
+            raise
+
     async def process_batch(self, items: List[Dict[str, Any]]):
         """Process a batch of files and directories to get their direct links.
         
@@ -84,7 +99,7 @@ class DirectLinkManager:
         try:
             results = []
             # Process items in smaller sub-batches to avoid overwhelming the API
-            for i in range(0, len(items), self.batch_size):  # Use batch size from v3 settings
+            for i in range(0, len(items), self.batch_size):  # Use batch size from performance settings
                 batch = items[i:i + self.batch_size]
                 for item in batch:
                     try:
@@ -144,29 +159,50 @@ class DirectLinkManager:
                                 logger.warning(f"Failed to generate direct link for {item['type']}: {item['filepath']}")
                     except Exception as e:
                         logger.error(f"Error generating direct link for {item['filepath']}: {e}")
-                        
+                        if "400" in str(e):  # Skip 400 errors as they're likely for unsupported files
+                            logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item['filepath']}")
+                            continue
+                        raise
+
             if results:
-                # Convert to Arrow table for efficient bulk insert
-                arrow_table = pa.Table.from_pylist(results)
-                
-                # Begin transaction
-                self.conn.execute("BEGIN TRANSACTION")
-                
                 try:
-                    self.conn.register('arrow_table', arrow_table)
-                    self.conn.execute("""
-                        INSERT OR REPLACE INTO direct_links 
-                        SELECT * FROM arrow_table
-                    """)
-                    self.conn.execute("COMMIT")
-                    logger.info(f"Generated {len(results)} direct links")
+                    # Convert to Arrow table for efficient bulk insert
+                    arrow_table = pa.Table.from_pylist(results)
+                    
+                    # Begin transaction
+                    self.conn.execute("BEGIN TRANSACTION")
+                    
+                    try:
+                        self.conn.register('arrow_table', arrow_table)
+                        self.conn.execute("""
+                            INSERT OR REPLACE INTO direct_links 
+                            SELECT * FROM arrow_table
+                        """)
+                        self.conn.execute("COMMIT")
+                        logger.info(f"Generated {len(results)} direct links")
+                    except Exception as e:
+                        if "database has been invalidated" in str(e):
+                            logger.warning("Database invalidated, attempting reconnection...")
+                            self._reconnect_database()
+                            # Retry the insert after reconnection
+                            self.conn.register('arrow_table', arrow_table)
+                            self.conn.execute("""
+                                INSERT OR REPLACE INTO direct_links 
+                                SELECT * FROM arrow_table
+                            """)
+                            self.conn.execute("COMMIT")
+                            logger.info(f"Generated {len(results)} direct links after reconnection")
+                        else:
+                            self.conn.execute("ROLLBACK")
+                            logger.error(f"Error updating direct links database: {e}")
+                            raise
                 except Exception as e:
-                    self.conn.execute("ROLLBACK")
-                    logger.error(f"Error updating direct links database: {e}")
+                    logger.error(f"Error processing direct links batch: {e}")
                     raise
         except Exception as e:
             logger.error(f"Error processing direct links batch: {e}")
-            
+            raise
+
     async def update_direct_links(self, files_db_path: str):
         """Update direct links for files and directories in the main database.
         
