@@ -26,6 +26,7 @@ logs/
 
 #workspace/
 fs-indexer-elasticsearch.code-workspace
+Prompt_notes.txt
 
 # Data
 data/
