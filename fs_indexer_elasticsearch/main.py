@@ -178,6 +178,7 @@ async def main() -> int:
                     batch = []
                     direct_link_batch = []
                     
+                    logger.info("Scanning root path...")
                     for entry in scanner.scan(root_path=root_path):
                         # Update statistics based on entry type
                         is_file = entry.get('type') == 'file'
@@ -223,6 +224,7 @@ async def main() -> int:
             else:
                 # Process files without LucidLink
                 batch = []
+                logger.info("Scanning root path...")
                 for entry in scanner.scan(root_path=root_path):
                     # Update statistics based on entry type
                     is_file = entry.get('type') == 'file'
