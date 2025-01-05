@@ -65,12 +65,6 @@ class ElasticsearchClient:
                             "keyword": {"type": "keyword"}
                         }
                     },
-                    "relative_path": {
-                        "type": "text",
-                        "fields": {
-                            "keyword": {"type": "keyword"}
-                        }
-                    },
                     "filepath": {
                         "type": "text",
                         "fields": {
@@ -93,19 +87,34 @@ class ElasticsearchClient:
 
     def _format_document(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         """Format document for Elasticsearch."""
-        # Make a copy to avoid modifying original
-        formatted_doc = doc.copy()
-        
         # Convert datetime objects to ISO format
         for field in ['modified_time', 'creation_time', 'last_seen']:
-            if isinstance(formatted_doc.get(field), datetime):
-                formatted_doc[field] = formatted_doc[field].isoformat()
+            if isinstance(doc.get(field), datetime):
+                doc[field] = doc[field].isoformat()
 
         # Add human readable size
-        if 'size_bytes' in formatted_doc:
-            formatted_doc['size'] = format_size(formatted_doc['size_bytes'])
+        if 'size_bytes' in doc:
+            doc['size'] = format_size(doc['size_bytes'])
 
-        return formatted_doc
+        return doc
+
+    def _prepare_documents(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Prepare documents for Elasticsearch indexing."""
+        documents = []
+        for entry in entries:
+            # Create a copy of the entry to avoid modifying the original
+            doc = entry.copy()
+            
+            # Remove internal fields
+            doc.pop('relative_path', None)  # Remove relative_path as it's only for internal use
+            
+            # Format size for display
+            if 'size_bytes' in doc:
+                doc['size'] = format_size(doc['size_bytes'])
+            
+            documents.append(doc)
+            
+        return documents
 
     def send_data(self, data: list):
         try:

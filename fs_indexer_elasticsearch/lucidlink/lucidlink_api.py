@@ -30,24 +30,6 @@ class LucidLinkAPI:
         self._seen_paths = set()  # Track seen paths to avoid duplicates
         self._dir_cache = {}  # Cache for directory contents
         self._cache_ttl = 300  # Cache TTL in seconds
-
-    def _should_skip_path(self, path: str, skip_patterns: List[str]) -> bool:
-        """Check if a path should be skipped based on skip patterns"""
-        if not skip_patterns:
-            return False
-            
-        # Clean up path for consistent matching
-        clean_path = path.strip('/')
-        
-        for pattern in skip_patterns:
-            pattern = pattern.strip('/')
-            if fnmatch.fnmatch(clean_path, pattern) or \
-               fnmatch.fnmatch(clean_path, f"*/{pattern}") or \
-               fnmatch.fnmatch(clean_path, f"{pattern}/*") or \
-               fnmatch.fnmatch(clean_path, f"*/{pattern}/*"):
-                logger.debug(f"Skipping {path} due to pattern {pattern}")
-                return True
-        return False
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -99,11 +81,10 @@ class LucidLinkAPI:
                             return {'items': []}  # Return empty result
                         response.raise_for_status()
                         data = await response.json()
-                        logger.debug(f"API response for {path}: {data}")
                         return data
-            except aiohttp.ClientError as e:
+            except Exception as e:
                 if attempt == self._retry_attempts - 1:
-                    logger.error(f"API request failed for path {path}: {str(e)}")
+                    logger.error(f"Failed to make request to {url} after {self._retry_attempts} attempts: {e}")
                     raise
                 await asyncio.sleep(self._retry_delay * (attempt + 1))
                 
@@ -316,7 +297,7 @@ class LucidLinkAPI:
             
     async def get_direct_link(self, file_path: str) -> Optional[str]:
         """Get direct link for a file based on the configured version"""
-        if self.version == 2:
+        if self.version <= 2:
             return await self.get_direct_link_v2(file_path)
         else:
             return await self.get_direct_link_v3(file_path)
@@ -331,11 +312,11 @@ class LucidLinkAPI:
         try:
             if fsentry_id:
                 # Use provided fsentry_id directly - fast path
-                if not self.filespace:
+                if not self._filespace:
                     logger.error("Filespace name not set")
                     return None
                     
-                direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
+                direct_link = f"lucid://{self._filespace}/file/{fsentry_id}"
                 logger.debug(f"Generated v2 direct link using provided ID for {file_path}: {direct_link}")
                 return direct_link
                 
@@ -355,11 +336,11 @@ class LucidLinkAPI:
                     
                 # Construct the direct link using the fsEntry ID
                 fsentry_id = data['id']
-                if not self.filespace:
+                if not self._filespace:
                     logger.error("Filespace name not set")
                     return None
                     
-                direct_link = f"lucid://{self.filespace}/file/{fsentry_id}"
+                direct_link = f"lucid://{self._filespace}/file/{fsentry_id}"
                 logger.debug(f"Generated v2 direct link via API for {file_path}: {direct_link}")
                 return direct_link
                 
@@ -449,3 +430,21 @@ class LucidLinkAPI:
     def get_all_files(self) -> List[Dict[str, Any]]:
         """Get all files and directories that were traversed"""
         return self._all_files
+
+    def _should_skip_path(self, path: str, skip_patterns: List[str]) -> bool:
+        """Check if a path should be skipped based on skip patterns"""
+        if not skip_patterns:
+            return False
+            
+        # Clean up path for consistent matching
+        clean_path = path.strip('/')
+        
+        for pattern in skip_patterns:
+            pattern = pattern.strip('/')
+            if fnmatch.fnmatch(clean_path, pattern) or \
+               fnmatch.fnmatch(clean_path, f"*/{pattern}") or \
+               fnmatch.fnmatch(clean_path, f"{pattern}/*") or \
+               fnmatch.fnmatch(clean_path, f"*/{pattern}/*"):
+                logger.debug(f"Skipping {path} due to pattern {pattern}")
+                return True
+        return False

@@ -17,14 +17,22 @@ logger = logging.getLogger(__name__)
 class FileScanner:
     """Optimized file scanner using find command and DuckDB."""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], mode: str = 'default'):
         """Initialize scanner with configuration."""
         self.config = config
-        self.batch_size = config.get('performance', {}).get('batch_size', 100000)
-        self.queue_size = config.get('performance', {}).get('queue_size', 10000)
-        self.db_path = self._get_db_path()
+        self.mode = mode
+        self.batch_size = config.get('performance', {}).get('batch_size', 5000)
         self.conn = None
         
+        # Get mount point and paths
+        self.mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
+        self.root_path = config.get('root_path', '/')
+        if not self.mount_point:
+            logger.warning("No mount point configured, using absolute paths")
+            
+        logger.info(f"Mount point: {self.mount_point}")
+        logger.info(f"Root path: {self.root_path}")
+
     def _get_db_path(self) -> str:
         """Get database path based on filespace name and mode."""
         mode = self.config.get('mode', 'index-only')
@@ -36,7 +44,7 @@ class FileScanner:
     def setup_database(self):
         """Setup DuckDB database with optimizations."""
         # Connect to database
-        self.conn = duckdb.connect(self.db_path)
+        self.conn = duckdb.connect(self._get_db_path())
         
         # Handle database setup based on mode
         check_missing_files = self.config.get('check_missing_files', True)
@@ -44,18 +52,18 @@ class FileScanner:
             # Drop and recreate mode - close connection and delete file
             self.conn.close()
             try:
-                os.remove(self.db_path)
+                os.remove(self._get_db_path())
             except FileNotFoundError:
                 pass
-            self.conn = duckdb.connect(self.db_path)
+            self.conn = duckdb.connect(self._get_db_path())
             
         # Create table if not exists
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id VARCHAR,
                 name VARCHAR,
-                relative_path VARCHAR PRIMARY KEY,
-                filepath VARCHAR,
+                relative_path VARCHAR PRIMARY KEY,  -- Keep for internal use
+                filepath VARCHAR,  -- Clean path for external use
                 size_bytes BIGINT,
                 modified_time TIMESTAMP,
                 creation_time TIMESTAMP,
@@ -185,17 +193,26 @@ class FileScanner:
                 
             # Get filepath (without mount point)
             filepath = name
-            if filepath.startswith('/Volumes/'):
-                # Remove /Volumes/dmpfs/production prefix
-                parts = filepath.split('/', 4)
-                if len(parts) > 4:
-                    filepath = '/' + parts[4]
+            if self.mount_point and name.startswith(self.mount_point):
+                # Remove mount point prefix
+                filepath = name[len(self.mount_point):]
+                if not filepath.startswith('/'):
+                    filepath = '/' + filepath
+                
+            # Generate relative path
+            relative_path = filepath
+            if self.root_path and self.root_path != '/':
+                # Remove root path prefix
+                if relative_path.startswith(self.root_path):
+                    relative_path = relative_path[len(self.root_path):]
+                    if not relative_path.startswith('/'):
+                        relative_path = '/' + relative_path
                 
             return {
-                'id': self._generate_file_id(name),
-                'name': Path(name).name,
-                'relative_path': name,
-                'filepath': filepath,
+                'id': self._generate_file_id(relative_path),
+                'name': Path(filepath).name,
+                'relative_path': relative_path,  # Full path relative to mount point
+                'filepath': filepath,  # Clean path for external use
                 'size_bytes': size,
                 'modified_time': timestamp,
                 'creation_time': timestamp,  # Use modified time as creation time if not available
@@ -210,39 +227,24 @@ class FileScanner:
             logger.error(f"Error parsing find output line: {e}")
             return None
             
-    def process_batch(self, entries: list):
-        """Process a batch of entries into the database.
-        
-        The bulk insert flow:
-        1. Convert batch of entries to Arrow table for efficient data transfer
-        2. Register Arrow table with DuckDB
-        3. Perform upsert operation:
-           - For new files: Insert them
-           - For existing files: Only update if the file was modified
-           - Use a transaction for atomicity
-        """
-        if not entries:
-            return
-            
+    def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
+        """Process a batch of file entries."""
         try:
-            # Convert to Arrow table for efficient bulk insert
-            arrow_table = pa.Table.from_pylist(entries)
+            # Convert batch to Arrow table
+            arrow_table = pa.Table.from_pylist(batch)
             
             # Register Arrow table with DuckDB
             self.conn.execute("BEGIN TRANSACTION")
             try:
                 self.conn.register('arrow_table', arrow_table)
                 
-                # Bulk upsert using DuckDB
-                # 1. Insert new records
-                # 2. Update existing records only if modified
+                # Insert new records
                 self.conn.execute("""
                     INSERT INTO files 
                     SELECT * FROM arrow_table
                     WHERE NOT EXISTS (
                         SELECT 1 FROM files 
                         WHERE files.relative_path = arrow_table.relative_path
-                        AND files.modified_time >= arrow_table.modified_time
                     )
                     ON CONFLICT(relative_path) DO UPDATE SET
                         name = excluded.name,
@@ -264,7 +266,66 @@ class FileScanner:
             
         except Exception as e:
             logger.error(f"Error processing batch: {e}")
+            raise
             
+    def _parse_find_output(self, line: str) -> Optional[Dict[str, Any]]:
+        """Parse a line of find output into a file entry."""
+        try:
+            # Split line by tabs
+            parts = line.strip().split('\t')
+            if len(parts) < 4:
+                return None
+                
+            # Parse path and get components
+            abs_path = parts[0]
+            name = os.path.basename(abs_path)
+            extension = os.path.splitext(name)[1].lower()[1:] if '.' in name else ''
+            
+            # Handle paths:
+            # - relative_path: Full path relative to mount point (for internal use)
+            # - filepath: Clean path for external use
+            if self.mount_point and abs_path.startswith(self.mount_point):
+                relative_path = abs_path[len(self.mount_point):]
+                filepath = relative_path
+            else:
+                relative_path = abs_path
+                filepath = abs_path
+                
+            # Ensure paths start with /
+            if not relative_path.startswith('/'):
+                relative_path = '/' + relative_path
+            if not filepath.startswith('/'):
+                filepath = '/' + filepath
+            
+            # Parse size and times
+            size_bytes = int(parts[1])
+            modified_time = datetime.fromtimestamp(int(parts[2]))
+            creation_time = datetime.fromtimestamp(int(parts[3]))
+            
+            # Generate unique ID
+            id_str = f"{relative_path}:{size_bytes}:{modified_time.timestamp()}"
+            file_id = hashlib.sha256(id_str.encode()).hexdigest()
+            
+            # Return file entry
+            return {
+                'id': file_id,
+                'name': name,
+                'relative_path': relative_path,  # Full path relative to mount point
+                'filepath': filepath,  # Clean path for external use
+                'size_bytes': size_bytes,
+                'modified_time': modified_time,
+                'creation_time': creation_time,
+                'type': 'file',
+                'extension': extension,
+                'checksum': None,  # Will be calculated later if needed
+                'direct_link': None,  # Will be populated by DirectLinkManager
+                'last_seen': datetime.now()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error parsing find output line: {e}")
+            return None
+
     def reader_thread(self, process: subprocess.Popen, queue: Queue, stop_event: threading.Event):
         """Read lines from find output and put them in the queue."""
         try:
@@ -281,9 +342,12 @@ class FileScanner:
         
         # Start find command
         cmd = [
-            'find', root_path,
+            'find', 
+            os.path.expanduser(root_path),  # Expand user paths
             '-ls'  # Get detailed listing
         ]
+        
+        logger.info(f"Running find command: {' '.join(cmd)}")
         
         process = subprocess.Popen(
             cmd,
@@ -294,7 +358,7 @@ class FileScanner:
         )
         
         # Setup queue and events
-        queue = Queue(maxsize=self.queue_size)
+        queue = Queue(maxsize=10000)
         stop_event = threading.Event()
         
         # Start reader thread
@@ -317,9 +381,13 @@ class FileScanner:
                     if entry:
                         batch.append(entry)
                         
+                        # Process batch if needed
                         if len(batch) >= self.batch_size:
-                            self.process_batch(batch)
-                            yield from batch
+                            try:
+                                self._process_batch(batch)
+                                yield from batch
+                            except Exception as e:
+                                logger.error(f"Error processing batch: {e}")
                             batch = []
                             
                 except Empty:
@@ -333,8 +401,11 @@ class FileScanner:
             
             # Process remaining entries
             if batch:
-                self.process_batch(batch)
-                yield from batch
+                try:
+                    self._process_batch(batch)
+                    yield from batch
+                except Exception as e:
+                    logger.error(f"Error processing final batch: {e}")
                 
     def cleanup_missing_files(self, current_files: set) -> int:
         """Clean up files that no longer exist from the database.
@@ -416,39 +487,20 @@ class FileScanner:
             logger.error(f"Error getting file info: {e}")
             return None
             
-    def get_removed_file_ids(self, current_files: set) -> List[str]:
-        """Get IDs of files that were removed."""
+    def get_removed_file_ids(self) -> List[str]:
+        """Get IDs of files that were removed in the last cleanup.
+        
+        Returns:
+            List of file IDs
+        """
         try:
-            # Get all files that are not in current_files
-            query = """
-                SELECT id
-                FROM files
-                WHERE relative_path NOT IN (
-                    SELECT unnest(?::VARCHAR[])
+            result = self.conn.execute("""
+                SELECT id FROM files 
+                WHERE last_seen < (
+                    SELECT MAX(last_seen) FROM files
                 )
-            """
-            result = self.conn.execute(query, [list(current_files)]).fetchall()
+            """).fetchall()
             return [row[0] for row in result]
         except Exception as e:
             logger.error(f"Error getting removed file IDs: {e}")
             return []
-
-    def update_direct_links(self, direct_links_db: str) -> None:
-        """Update direct links from the direct links database."""
-        try:
-            # Attach direct links database
-            self.conn.execute(f"ATTACH '{direct_links_db}' as direct_links")
-            
-            # Update direct links in files table
-            self.conn.execute("""
-                UPDATE files f
-                SET direct_link = dl.direct_link
-                FROM direct_links.direct_links dl
-                WHERE f.id = dl.file_id
-            """)
-            
-            # Detach database
-            self.conn.execute("DETACH direct_links")
-            
-        except Exception as e:
-            logger.error(f"Error updating direct links: {e}")

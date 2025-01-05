@@ -21,6 +21,7 @@ class DirectLinkManager:
         self.batch_size = config.get('performance', {}).get('direct_link_batch_size', 1000)
         self.db_path = self._get_db_path()
         self.conn = None
+        self.version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
         
     def _get_db_path(self) -> str:
         """Get database path based on filespace name."""
@@ -35,20 +36,22 @@ class DirectLinkManager:
         # Connect to database
         self.conn = duckdb.connect(self.db_path)
         
+        # Drop existing table and indexes
+        self.conn.execute("DROP TABLE IF EXISTS direct_links")
+        
         # Create tables if they don't exist
         self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS direct_links (
+            CREATE TABLE direct_links (
                 file_id VARCHAR PRIMARY KEY,
                 direct_link VARCHAR,
                 link_type VARCHAR,  -- v2 or v3
-                fsentry_id VARCHAR,  -- For v2 caching
+                fsentry_id VARCHAR NULL,  -- For v2 caching
                 last_updated TIMESTAMP
             )
         """)
         
         # Create indexes for better performance
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_last_updated ON direct_links(last_updated)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_fsentry_id ON direct_links(fsentry_id)")
         
         # Enable optimizations
         self.conn.execute("SET enable_progress_bar=false")
@@ -72,50 +75,50 @@ class DirectLinkManager:
                 if file['type'] != 'file':
                     continue
                     
-                # Get direct link based on version
-                if self.lucidlink_api.version == 3:
-                    # V3: Simple direct API call
-                    direct_link = await self.lucidlink_api.get_direct_link_v3(file['relative_path'])
-                    if direct_link:
-                        results.append({
-                            'file_id': file['id'],
-                            'direct_link': direct_link,
-                            'link_type': 'v3',
-                            'fsentry_id': None,  # Not used in v3
-                            'last_updated': datetime.now()
-                        })
-                else:
-                    # V2: Try fast path first using cached fsentry_id
-                    fsentry_id = None
-                    if 'fsentry_id' in file:
-                        fsentry_id = file['fsentry_id']
+                try:
+                    # Get direct link based on version
+                    if self.version == 3:
+                        # V3: Simple direct API call
+                        direct_link = await self.lucidlink_api.get_direct_link_v3(file['filepath'])
+                        if direct_link:
+                            results.append({
+                                'file_id': file['id'],
+                                'direct_link': direct_link,
+                                'link_type': 'v3',
+                                'fsentry_id': None,  # Not used in v3
+                                'last_updated': datetime.now()
+                            })
                     else:
-                        # Check cache in direct_links table
-                        cache_result = self.conn.execute("""
-                            SELECT fsentry_id 
-                            FROM direct_links 
-                            WHERE file_id = ? 
-                            AND last_updated > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
-                        """, [file['id']]).fetchone()
-                        if cache_result:
-                            fsentry_id = cache_result[0]
-                    
-                    # Get direct link (will use fsentry_id if available)
-                    direct_link = await self.lucidlink_api.get_direct_link_v2(
-                        file['relative_path'], 
-                        fsentry_id=fsentry_id
-                    )
-                    
-                    if direct_link:
-                        # Extract fsentry_id from link for caching
-                        new_fsentry_id = direct_link.split('/')[-1]
-                        results.append({
-                            'file_id': file['id'],
-                            'direct_link': direct_link,
-                            'link_type': 'v2',
-                            'fsentry_id': new_fsentry_id,
-                            'last_updated': datetime.now()
-                        })
+                        # V2: Try fast path first using cached fsentry_id
+                        fsentry_id = None
+                        if 'fsentry_id' in file:
+                            fsentry_id = file['fsentry_id']
+                        else:
+                            # Check cache in direct_links table
+                            cache_result = self.conn.execute("""
+                                SELECT fsentry_id 
+                                FROM direct_links 
+                                WHERE file_id = ? 
+                                AND last_updated > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
+                            """, [file['id']]).fetchone()
+                            if cache_result:
+                                fsentry_id = cache_result[0]
+                        
+                        # Get direct link (will use fsentry_id if available)
+                        direct_link = await self.lucidlink_api.get_direct_link_v2(
+                            file['filepath'], 
+                            fsentry_id=fsentry_id
+                        )
+                        if direct_link:
+                            results.append({
+                                'file_id': file['id'],
+                                'direct_link': direct_link,
+                                'link_type': 'v2',
+                                'fsentry_id': fsentry_id,
+                                'last_updated': datetime.now()
+                            })
+                except Exception as e:
+                    logger.error(f"Error generating direct link for {file['filepath']}: {e}")
                     
             if results:
                 # Convert to Arrow table for efficient bulk insert
@@ -126,13 +129,8 @@ class DirectLinkManager:
                 try:
                     self.conn.register('arrow_table', arrow_table)
                     self.conn.execute("""
-                        INSERT INTO direct_links 
+                        INSERT OR REPLACE INTO direct_links 
                         SELECT * FROM arrow_table
-                        ON CONFLICT(file_id) DO UPDATE SET
-                            direct_link = excluded.direct_link,
-                            link_type = excluded.link_type,
-                            fsentry_id = excluded.fsentry_id,
-                            last_updated = excluded.last_updated
                     """)
                     self.conn.execute("COMMIT")
                 except Exception as e:
@@ -219,3 +217,24 @@ class DirectLinkManager:
                 f.relative_path
         """
         return files_conn.execute(query).fetch_arrow_table()
+
+    def get_direct_link(self, file_id: str) -> str:
+        """Get direct link for a file by its ID.
+        
+        Args:
+            file_id: File ID to get direct link for
+            
+        Returns:
+            Direct link string or empty string if not found
+        """
+        try:
+            result = self.conn.execute("""
+                SELECT direct_link
+                FROM direct_links
+                WHERE file_id = ?
+            """, [file_id]).fetchone()
+            
+            return result[0] if result else ''
+        except Exception as e:
+            logger.error(f"Error getting direct link for file {file_id}: {e}")
+            return ''
