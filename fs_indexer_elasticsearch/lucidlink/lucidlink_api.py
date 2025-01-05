@@ -349,7 +349,7 @@ class LucidLinkAPI:
             return None
 
     async def get_direct_link_v3(self, file_path: str) -> Optional[str]:
-        """Get direct link for a file using v3 API endpoint"""
+        """Get direct link for a file or directory using v3 API endpoint"""
         try:
             if not self.session:
                 raise RuntimeError("Session not initialized")

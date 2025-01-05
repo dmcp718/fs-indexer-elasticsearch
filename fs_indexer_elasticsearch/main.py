@@ -137,7 +137,7 @@ async def main() -> int:
                             current_files.add(entry.get('relative_path'))
                         
                         # Add to direct link batch if needed
-                        if direct_link_manager and entry.get('type') == 'file':
+                        if direct_link_manager:  
                             direct_link_batch.append(entry)
                             if len(direct_link_batch) >= direct_link_manager.batch_size:
                                 await direct_link_manager.process_batch(direct_link_batch)
