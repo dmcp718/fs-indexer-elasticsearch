@@ -41,7 +41,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ('config/*', 'config'),
-        ('fs_indexer_elasticsearch/elasticsearch/templates/*', 'fs_indexer_elasticsearch/elasticsearch/templates'),
         ('fs-indexer-elasticsearch-docker-compose/*', 'docker-compose'),
     ],
     hiddenimports=[
