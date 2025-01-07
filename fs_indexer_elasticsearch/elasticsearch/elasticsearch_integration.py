@@ -132,7 +132,7 @@ class ElasticsearchClient:
             
             # Debug: check direct_links table
             results = conn.execute("SELECT * FROM direct_links LIMIT 5").fetchall()
-            logging.info(f"Direct links sample: {results}")
+            logging.debug(f"Direct links sample: {results}")
             
             # Join with direct_links to get API timestamps
             results = conn.execute("""
@@ -160,7 +160,7 @@ class ElasticsearchClient:
             
             # Debug: check join results
             docs = results.to_pylist()
-            logging.info(f"Join results sample: {docs[:1]}")
+            logging.debug(f"Join results sample: {docs[:1]}")
             
             # Convert to list of dicts
             return docs
