@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Dict, Any, Generator, List
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import time
+import hashlib
+import duckdb
+import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,12 @@ class ParallelFindScanner:
         self.mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
+        self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
+        
+        # Initialize database only if enabled
+        self.conn = None
+        if config.get('database', {}).get('enabled', True):
+            self._init_db()
         
         # Progress tracking
         self._completed_dirs = 0
@@ -473,6 +482,17 @@ class ParallelFindScanner:
             logger.error(f"Error scanning directory {directory}: {e}")
             raise
             
+    def _generate_file_id(self, relative_path: str) -> str:
+        """Generate a consistent file ID from the relative path.
+        
+        Args:
+            relative_path: Relative path to the file
+            
+        Returns:
+            SHA-256 hash of the path as hex string
+        """
+        return hashlib.sha256(relative_path.encode()).hexdigest()
+
     def _parse_find_output(self, line: str) -> Dict[str, Any]:
         """Parse find -ls output line.
         
@@ -536,7 +556,7 @@ class ParallelFindScanner:
                     relative_path = '/' + relative_path
                 
             return {
-                'id': None,
+                'id': self._generate_file_id(relative_path),
                 'name': Path(filepath).name,
                 'relative_path': relative_path,
                 'filepath': filepath,
@@ -554,101 +574,6 @@ class ParallelFindScanner:
             logger.debug(f"Error parsing find output: {e}")
             return None
 
-    def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
-        """Scan filesystem in parallel and yield file entries.
-        
-        Args:
-            root_path: Root directory to scan
-            
-        Yields:
-            Dict containing file metadata
-        """
-        directories = self.split_directories(root_path)
-        if not directories:
-            return
-
-        # Initialize progress tracking
-        self._completed_dirs = 0
-        self._total_dirs = len(directories)
-        self._total_files = 0
-        self._total_bytes = 0
-        self._start_time = time.time()
-        logger.info(f"Starting scan of {self._total_dirs} directories...")
-        
-        # Track failed directories for retry
-        failed_dirs = []
-        retry_count = 0
-        max_retries = 2
-        
-        while directories and retry_count <= max_retries:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all jobs first
-                futures = {
-                    executor.submit(self._scan_directory, d): d 
-                    for d in directories
-                }
-                
-                # Process results as they complete
-                for future in futures:
-                    directory = futures[future]
-                    try:
-                        results = future.result(timeout=3600)
-                        
-                        # Update progress
-                        self._completed_dirs += 1
-                        dir_files = len(results)
-                        dir_bytes = sum(r['size_bytes'] for r in results)
-                        self._total_files += dir_files
-                        self._total_bytes += dir_bytes
-                        
-                        # Calculate rates
-                        elapsed = time.time() - self._start_time
-                        files_per_sec = self._total_files / elapsed if elapsed > 0 else 0
-                        bytes_per_sec = self._total_bytes / elapsed if elapsed > 0 else 0
-                        
-                        # Log progress for each completed directory
-                        progress = (self._completed_dirs / self._total_dirs) * 100
-                        logger.info(
-                            f"Progress: {self._completed_dirs}/{self._total_dirs} directories "
-                            f"({progress:.1f}%), {self._total_files:,} files found "
-                            f"({self._format_size(self._total_bytes)}, "
-                            f"{files_per_sec:.1f} files/sec, "
-                            f"{self._format_size(bytes_per_sec)}/sec)"
-                        )
-                        
-                        # Yield results
-                        for result in results:
-                            yield result
-                            
-                    except TimeoutError:
-                        logger.error(f"Timeout scanning directory: {directory}")
-                        failed_dirs.append(directory)
-                    except Exception as e:
-                        logger.error(f"Error scanning directory {directory}: {e}")
-                        failed_dirs.append(directory)
-                        
-            # Handle retries
-            if failed_dirs:
-                retry_count += 1
-                if retry_count <= max_retries:
-                    reduced_workers = max(1, self.max_workers // (retry_count * 2))
-                    logger.warning(
-                        f"Retry #{retry_count}: Retrying {len(failed_dirs)} failed directories "
-                        f"with {reduced_workers} workers"
-                    )
-                    directories = failed_dirs
-                    self._total_dirs = len(directories)
-                    failed_dirs = []
-                    self.max_workers = reduced_workers
-                else:
-                    logger.error(
-                        f"Giving up on {len(failed_dirs)} directories after {max_retries} retries: "
-                        f"{', '.join(failed_dirs)}"
-                    )
-                    break
-            else:
-                break
-                
     def _get_file_info(self, path: str) -> Dict[str, Any]:
         """Get file information.
         
@@ -692,7 +617,7 @@ class ParallelFindScanner:
                             relative_path = '/' + relative_path
                     
                 return {
-                    'id': None,
+                    'id': self._generate_file_id(relative_path),
                     'name': Path(filepath).name,
                     'relative_path': relative_path,
                     'filepath': filepath,
@@ -711,3 +636,200 @@ class ParallelFindScanner:
         except Exception as e:
             logger.debug(f"Error parsing file info: {e}")
             return None
+
+    def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
+        """Process a batch of file entries."""
+        if not batch:
+            return
+            
+        if not self.config.get('database', {}).get('enabled', True):
+            return  # Skip database operations if disabled
+            
+        try:
+            if not self.conn:
+                self._init_db()
+                
+            # Convert batch to Arrow table
+            arrow_table = pa.Table.from_pylist(batch)
+            
+            # Register Arrow table with DuckDB
+            self.conn.execute("BEGIN TRANSACTION")
+            try:
+                self.conn.register('arrow_table', arrow_table)
+                
+                # Insert new records
+                self.conn.execute("""
+                    INSERT INTO files 
+                    SELECT * FROM arrow_table
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM files 
+                        WHERE files.relative_path = arrow_table.relative_path
+                    )
+                    ON CONFLICT(relative_path) DO UPDATE SET
+                        name = excluded.name,
+                        filepath = excluded.filepath,
+                        size_bytes = excluded.size_bytes,
+                        modified_time = excluded.modified_time,
+                        creation_time = excluded.creation_time,
+                        type = excluded.type,
+                        extension = excluded.extension,
+                        checksum = excluded.checksum,
+                        direct_link = excluded.direct_link,
+                        last_seen = excluded.last_seen
+                    WHERE excluded.modified_time > files.modified_time
+                """)
+                self.conn.execute("COMMIT")
+            except Exception as e:
+                self.conn.execute("ROLLBACK")
+                raise e
+            
+        except Exception as e:
+            logger.error(f"Error processing batch: {e}")
+            raise
+
+    def _init_db(self):
+        """Setup DuckDB database with optimizations."""
+        # Connect to database
+        self.conn = duckdb.connect(self._get_db_path())
+        
+        # Create table if not exists
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                id VARCHAR,
+                name VARCHAR,
+                relative_path VARCHAR PRIMARY KEY,  -- Keep for internal use
+                filepath VARCHAR,  -- Clean path for external use
+                size_bytes BIGINT,
+                modified_time TIMESTAMP,
+                creation_time TIMESTAMP,
+                type VARCHAR,
+                extension VARCHAR,
+                checksum VARCHAR,
+                direct_link VARCHAR,
+                last_seen TIMESTAMP
+            )
+        """)
+        
+        # Enable optimizations
+        self.conn.execute("SET enable_progress_bar=false")
+        self.conn.execute("SET temp_directory='data'")
+        self.conn.execute("SET memory_limit='4GB'")
+        self.conn.execute("PRAGMA threads=8")
+        
+    def _get_db_path(self) -> str:
+        """Get database path based on filespace name."""
+        if self.config.get('lucidlink_filespace', {}).get('enabled', False):
+            filespace = self.config.get('lucidlink_filespace', {}).get('name', 'default')
+            return f"data/{filespace}_index.duckdb"
+        return "data/fs_index.duckdb"
+
+    def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
+        """Scan filesystem in parallel and yield file entries.
+        
+        Args:
+            root_path: Root directory to scan
+            
+        Yields:
+            Dict containing file metadata
+        """
+        directories = self.split_directories(root_path)
+        if not directories:
+            return
+
+        # Initialize progress tracking
+        self._completed_dirs = 0
+        self._total_dirs = len(directories)
+        self._total_files = 0
+        self._total_bytes = 0
+        self._start_time = time.time()
+        logger.info(f"Starting scan of {self._total_dirs} directories...")
+        
+        # Track failed directories for retry
+        failed_dirs = []
+        retry_count = 0
+        max_retries = 2
+        
+        # Initialize batch for database
+        batch = []
+        
+        while directories and retry_count <= max_retries:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit all jobs first
+                futures = {
+                    executor.submit(self._scan_directory, d): d 
+                    for d in directories
+                }
+                
+                # Process results as they complete
+                for future in futures:
+                    directory = futures[future]
+                    try:
+                        results = future.result(timeout=3600)
+                        
+                        # Update progress
+                        self._completed_dirs += 1
+                        dir_files = len(results)
+                        dir_bytes = sum(r['size_bytes'] for r in results)
+                        self._total_files += dir_files
+                        self._total_bytes += dir_bytes
+                        
+                        # Calculate rates
+                        elapsed = time.time() - self._start_time
+                        files_per_sec = self._total_files / elapsed if elapsed > 0 else 0
+                        bytes_per_sec = self._total_bytes / elapsed if elapsed > 0 else 0
+                        
+                        # Log progress for each completed directory
+                        progress = (self._completed_dirs / self._total_dirs) * 100
+                        logger.info(
+                            f"Progress: {self._completed_dirs}/{self._total_dirs} directories "
+                            f"({progress:.1f}%), {self._total_files:,} files found "
+                            f"({self._format_size(self._total_bytes)}, "
+                            f"{files_per_sec:.1f} files/sec, "
+                            f"{self._format_size(bytes_per_sec)}/sec)"
+                        )
+                        
+                        # Add results to batch
+                        batch.extend(results)
+                        
+                        # Process batch if it's large enough
+                        if len(batch) >= self.batch_size:
+                            self._process_batch(batch)
+                            batch = []
+                        
+                        # Yield results
+                        for result in results:
+                            yield result
+                            
+                    except TimeoutError:
+                        logger.error(f"Timeout scanning directory: {directory}")
+                        failed_dirs.append(directory)
+                    except Exception as e:
+                        logger.error(f"Error scanning directory {directory}: {e}")
+                        failed_dirs.append(directory)
+                        
+            # Process any remaining batch items
+            if batch:
+                self._process_batch(batch)
+                batch = []
+            
+            # Handle retries
+            if failed_dirs:
+                retry_count += 1
+                if retry_count <= max_retries:
+                    reduced_workers = max(1, self.max_workers // (retry_count * 2))
+                    logger.warning(
+                        f"Retry #{retry_count}: Retrying {len(failed_dirs)} failed directories "
+                        f"with {reduced_workers} workers"
+                    )
+                    directories = failed_dirs
+                    self._total_dirs = len(directories)
+                    failed_dirs = []
+                    self.max_workers = reduced_workers
+                else:
+                    logger.error(
+                        f"Giving up on {len(failed_dirs)} directories after {max_retries} retries: "
+                        f"{', '.join(failed_dirs)}"
+                    )
+                    break
+            else:
+                break
