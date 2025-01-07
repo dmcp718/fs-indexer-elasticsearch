@@ -34,13 +34,35 @@ def signal_handler(signum, frame):
 
 async def main() -> int:
     """Main entry point for the file indexer."""
-    parser = argparse.ArgumentParser(description='File System Indexer')
+    parser = argparse.ArgumentParser(
+        description='LucidLink File System Indexer for Elasticsearch',
+        prog='fs-indexer',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Index files using config file settings
+  %(prog)s --config config/indexer-config.yaml
+
+  # Index specific directory with LucidLink v2
+  %(prog)s --root-path /Volumes/filespace/path --version 2
+
+  # Index files without Elasticsearch (index-only mode)
+  %(prog)s --root-path /path/to/index --mode index-only
+""")
+
+    # Required arguments
     parser.add_argument('--config', type=str, default='config/indexer-config.yaml',
-                       help='Path to configuration file')
-    parser.add_argument('--root-path', type=str,
-                       help='Root path to start indexing from')
-    parser.add_argument('--version', type=int, choices=[2, 3],
-                       help='LucidLink version (2 or 3). Overrides config file setting.')
+                       help='Path to configuration file (default: %(default)s)')
+    
+    # Optional arguments
+    group = parser.add_argument_group('indexing options')
+    group.add_argument('--root-path', type=str, metavar='PATH',
+                      help='Root path to start indexing from. If not provided, will use path from config')
+    group.add_argument('--version', type=int, choices=[2, 3], metavar='VER',
+                      help='LucidLink version to use (2 or 3). Overrides config setting')
+    group.add_argument('--mode', type=str, choices=['elasticsearch', 'index-only'],
+                      default='elasticsearch', metavar='MODE',
+                      help='Operating mode: elasticsearch (default) or index-only')
     args = parser.parse_args()
 
     try:
@@ -64,7 +86,7 @@ async def main() -> int:
         workflow_stats = WorkflowStats()
 
         # Initialize components
-        mode = config.get('mode', 'elasticsearch')
+        mode = args.mode  # Use mode from command line arguments
         logger.info(f"Running in {mode} mode")
         scanner = None
         es_client = None
