@@ -10,15 +10,15 @@ from typing import Dict, Any, Optional, Tuple
 import os
 import subprocess
 
-from .config.config import load_config
-from .config.logging import configure_logging
-from .elasticsearch.elasticsearch_integration import ElasticsearchClient
-from .elasticsearch.kibana_data_views import KibanaDataViewManager
-from .scanner import FileScanner, DirectLinkManager
-from .lucidlink.directory_size import DirectorySizeCalculator
-from .lucidlink.lucidlink_api import LucidLinkAPI
-from .lucidlink.filespace_prompt import get_filespace_info
-from .utils.workflow_stats import WorkflowStats
+from fs_indexer_elasticsearch.config.config import load_config
+from fs_indexer_elasticsearch.config.logging import configure_logging
+from fs_indexer_elasticsearch.elasticsearch.elasticsearch_integration import ElasticsearchClient
+from fs_indexer_elasticsearch.elasticsearch.kibana_data_views import KibanaDataViewManager
+from fs_indexer_elasticsearch.scanner import FileScanner, DirectLinkManager
+from fs_indexer_elasticsearch.lucidlink.directory_size import DirectorySizeCalculator
+from fs_indexer_elasticsearch.lucidlink.lucidlink_api import LucidLinkAPI
+from fs_indexer_elasticsearch.lucidlink.filespace_prompt import get_filespace_info
+from fs_indexer_elasticsearch.utils.workflow_stats import WorkflowStats
 
 # Initialize basic logging
 logger = logging.getLogger(__name__)
