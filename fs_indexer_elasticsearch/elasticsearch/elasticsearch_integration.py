@@ -140,18 +140,16 @@ class ElasticsearchClient:
                     SELECT 
                         file_id,
                         fsentry_id,
-                        strftime(api_creation_time, '%Y-%m-%dT%H:%M:%S') as api_creation_time,
-                        strftime(api_modified_time, '%Y-%m-%dT%H:%M:%S') as api_modified_time,
-                        file_type,
-                        ROW_NUMBER() OVER (PARTITION BY file_id ORDER BY api_modified_time DESC) as rn
+                        last_updated as api_creation_time,
+                        link_type,
+                        ROW_NUMBER() OVER (PARTITION BY file_id ORDER BY last_updated DESC) as rn
                     FROM direct_links
                 )
                 SELECT 
                     f.*,
                     dl.api_creation_time,
-                    dl.api_modified_time,
                     dl.fsentry_id,
-                    dl.file_type
+                    dl.link_type
                 FROM 
                     temp_files f
                 LEFT JOIN 

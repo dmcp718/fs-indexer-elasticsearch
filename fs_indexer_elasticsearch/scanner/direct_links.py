@@ -287,9 +287,20 @@ class DirectLinkManager:
         """
         query = """
             SELECT 
-                f.*,
-                dl.direct_link,
-                dl.link_type
+                f.id,
+                f.name,
+                f.relative_path,
+                f.filepath,
+                f.size_bytes,
+                f.modified_time,
+                f.creation_time,
+                f.type,
+                f.extension,
+                f.checksum,
+                COALESCE(dl.direct_link, f.direct_link) as direct_link,
+                f.last_seen,
+                dl.link_type,
+                dl.last_updated as api_creation_time
             FROM 
                 files f
             LEFT JOIN 
