@@ -42,6 +42,7 @@ a = Analysis(
     datas=[
         ('config/*.yaml', 'config'),
         ('fs-indexer-elasticsearch-docker-compose/*', 'docker-compose'),
+        ('data', 'data'),  # Include empty data directory
     ],
     hiddenimports=[
         'elasticsearch',
@@ -103,6 +104,10 @@ coll = COLLECT(
     spec_file = root_dir / 'fs-indexer-elasticsearch.spec'
     spec_file.write_text(spec_content)
 
+    # Ensure data directory exists
+    data_dir = root_dir / 'data'
+    data_dir.mkdir(exist_ok=True)
+
     # Build the application
     cmd = [
         str(pyinstaller_path),
@@ -118,6 +123,11 @@ coll = COLLECT(
     
     for file in docker_compose_dir.glob('*'):
         shutil.copy2(file, docker_dist_dir)
+
+    # Create empty data directory in dist if it doesn't exist
+    dist_data_dir = dist_dir / 'fs-indexer-elasticsearch' / 'data'
+    if not dist_data_dir.exists():
+        dist_data_dir.mkdir(parents=True)
 
     print("\nBuild complete! Executable can be found in the 'dist' directory.")
     print("Docker Compose files are available in 'dist/fs-indexer-elasticsearch/docker-compose/'")
