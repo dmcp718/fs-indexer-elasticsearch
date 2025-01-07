@@ -96,7 +96,7 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='fs-indexer-elasticsearch',
+    name=f'fs-indexer-elasticsearch-{platform.system().lower()}',
 )
 '''
 
@@ -117,7 +117,7 @@ coll = COLLECT(
     run_command(cmd)
 
     # Copy docker-compose files to a more accessible location in dist
-    docker_dist_dir = dist_dir / 'fs-indexer-elasticsearch' / 'docker-compose'
+    docker_dist_dir = dist_dir / f'fs-indexer-elasticsearch-{system}' / 'docker-compose'
     if not docker_dist_dir.exists():
         docker_dist_dir.mkdir(parents=True)
     
@@ -125,12 +125,12 @@ coll = COLLECT(
         shutil.copy2(file, docker_dist_dir)
 
     # Create empty data directory in dist if it doesn't exist
-    dist_data_dir = dist_dir / 'fs-indexer-elasticsearch' / 'data'
+    dist_data_dir = dist_dir / f'fs-indexer-elasticsearch-{system}' / 'data'
     if not dist_data_dir.exists():
         dist_data_dir.mkdir(parents=True)
 
     print("\nBuild complete! Executable can be found in the 'dist' directory.")
-    print("Docker Compose files are available in 'dist/fs-indexer-elasticsearch/docker-compose/'")
+    print(f"Docker Compose files are available in 'dist/fs-indexer-elasticsearch-{system}/docker-compose/'")
 
 if __name__ == '__main__':
     build_app()
