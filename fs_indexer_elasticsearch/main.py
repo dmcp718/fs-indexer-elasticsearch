@@ -9,6 +9,7 @@ import asyncio
 from typing import Dict, Any, Optional, Tuple
 import os
 import subprocess
+from pathlib import Path
 
 from fs_indexer_elasticsearch.config.config import load_config
 from fs_indexer_elasticsearch.config.logging import configure_logging
@@ -32,6 +33,16 @@ def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, initiating graceful shutdown...")
     shutdown_requested = True
 
+def get_default_config_path():
+    """Get the default config path based on execution context."""
+    if getattr(sys, 'frozen', False):
+        # Running in PyInstaller bundle
+        base_dir = Path(sys._MEIPASS)
+        return str(base_dir / 'config' / 'indexer-config.yaml')
+    else:
+        # Running from source
+        return 'config/indexer-config.yaml'
+
 async def main() -> int:
     """Main entry point for the file indexer."""
     parser = argparse.ArgumentParser(
@@ -51,8 +62,8 @@ Examples:
 """)
 
     # Required arguments
-    parser.add_argument('--config', type=str, default='config/indexer-config.yaml',
-                       help='Path to configuration file (default: %(default)s)')
+    parser.add_argument('--config', type=str, default=get_default_config_path(),
+                       help='Path to configuration file (default: config/indexer-config.yaml)')
     
     # Optional arguments
     group = parser.add_argument_group('indexing options')

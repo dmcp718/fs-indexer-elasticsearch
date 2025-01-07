@@ -3,38 +3,42 @@ import sys
 import yaml
 import logging
 import logging.handlers
+from pathlib import Path
 
 def get_base_dir():
-    """Get the base directory for the application, handling both PyInstaller and regular execution."""
+    """Get the base directory for the application."""
     if getattr(sys, 'frozen', False):
-        # Running in PyInstaller bundle
-        return os.path.dirname(sys._MEIPASS)
+        # If the application is run as a bundle (PyInstaller)
+        base_dir = Path(sys._MEIPASS)
     else:
-        # Running in normal Python environment
-        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # If the application is run from source
+        base_dir = Path(__file__).parent.parent.parent
+
+    return base_dir
 
 def load_config(config_path=None):
-    """Load configuration from file."""
-    # Define config locations upfront
+    """Load configuration from YAML file."""
+    if config_path:
+        # If a specific config path is provided, use it
+        config_path = Path(config_path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found at specified path: {config_path}")
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+
+    # Otherwise, look in default locations
     base_dir = get_base_dir()
-    config_locations = [
-        os.path.join(base_dir, 'config', 'indexer-config.yaml'),  # Project config directory
-        os.path.join(base_dir, 'indexer-config.yaml'),         # Current directory
-        os.path.join(os.path.dirname(__file__), 'indexer-config.yaml'),  # Package directory
+    config_paths = [
+        base_dir / 'config' / 'indexer-config.yaml',  # Look in config directory first
+        base_dir / 'indexer-config.yaml',  # Then look at root level
     ]
 
-    if not config_path:
-        # Try locations in order
-        for loc in config_locations:
-            if os.path.exists(loc):
-                config_path = loc
-                break
-    
-    if not config_path or not os.path.exists(config_path):
-        raise FileNotFoundError(f"Configuration file not found in any of the expected locations: {config_locations}")
-    
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+    for path in config_paths:
+        if path.exists():
+            with open(path, 'r') as f:
+                return yaml.safe_load(f)
+
+    raise FileNotFoundError(f"Config file not found in any of these locations: {[str(p) for p in config_paths]}")
 
 def init_logging(config):
     """Initialize logging configuration."""

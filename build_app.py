@@ -40,9 +40,9 @@ a = Analysis(
     pathex=['{root_dir}'],
     binaries=[],
     datas=[
-        ('config/*.yaml', 'config'),
         ('fs-indexer-elasticsearch-docker-compose/*', 'docker-compose'),
         ('data', 'data'),  # Include empty data directory
+        ('config/indexer-config.yaml', 'config'),  # Include config file
     ],
     hiddenimports=[
         'elasticsearch',

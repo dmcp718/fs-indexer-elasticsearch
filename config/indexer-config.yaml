@@ -26,12 +26,12 @@ lucidlink_filespace:
     
   v3_settings:
     # Maximum concurrent API requests for direct links
-    max_concurrent_requests: 4  # API bound, so keep low
+    max_concurrent_requests: 10  # API bound, so keep low
     # Retry settings for API calls
     retry_attempts: 5
     retry_delay_seconds: 0.5
     # Batch size for direct link requests
-    batch_size: 10000
+    batch_size: 100000
     # Queue size for async processing
     queue_size: 10000
 
