@@ -5,6 +5,9 @@ import urllib3
 from datetime import datetime
 from dateutil import tz
 from ..utils.size_formatter import format_size
+import os
+import duckdb
+import pyarrow as pa
 
 class ElasticsearchClient:
     def __init__(self, host: str, port: int, username: str, password: str, index_name: str, filespace: str):
@@ -18,6 +21,7 @@ class ElasticsearchClient:
             max_retries=3
         )
         self.index_name = index_name
+        self.filespace = filespace
         self._ensure_index_exists()
         logging.info(f"Connected to Elasticsearch at {host}:{port}")
 
@@ -76,10 +80,13 @@ class ElasticsearchClient:
                     "size": {"type": "keyword"},
                     "modified_time": {"type": "date"},
                     "creation_time": {"type": "date"},
+                    "api_modified_time": {"type": "date"},  # Accurate timestamp from LucidLink API
+                    "api_creation_time": {"type": "date"},  # Accurate timestamp from LucidLink API
                     "type": {"type": "keyword"},
                     "extension": {"type": "keyword"},
                     "checksum": {"type": "keyword"},
                     "direct_link": {"type": "keyword"},
+                    "fsentry_id": {"type": "keyword"},  # LucidLink fsEntry ID
                     "last_seen": {"type": "date"}
                 }
             }
@@ -87,26 +94,90 @@ class ElasticsearchClient:
 
     def _format_document(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         """Format document for Elasticsearch."""
-        # Convert datetime objects to ISO format
-        for field in ['modified_time', 'creation_time', 'last_seen']:
-            if isinstance(doc.get(field), datetime):
-                doc[field] = doc[field].isoformat()
-
-        # Add human readable size
+        # Convert timestamps to ISO format
+        if 'creation_time' in doc:
+            doc['creation_time'] = doc['creation_time'].isoformat() if doc['creation_time'] else None
+        if 'modified_time' in doc:
+            doc['modified_time'] = doc['modified_time'].isoformat() if doc['modified_time'] else None
+        if 'api_creation_time' in doc:
+            doc['api_creation_time'] = doc['api_creation_time']
+        if 'api_modified_time' in doc:
+            doc['api_modified_time'] = doc['api_modified_time']
+        if 'last_seen' in doc:
+            doc['last_seen'] = doc['last_seen'].isoformat() if doc['last_seen'] else None
+            
+        # Format size for display
         if 'size_bytes' in doc:
             doc['size'] = format_size(doc['size_bytes'])
-
+            
+        # Remove internal fields
+        doc.pop('relative_path', None)
+        
         return doc
 
-    def _prepare_documents(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Prepare documents for Elasticsearch indexing."""
+    def _prepare_documents_with_join(self, documents: List[Dict[str, Any]], direct_links_db: str) -> List[Dict[str, Any]]:
+        """Prepare documents for indexing by joining with direct_links database."""
+        try:
+            # Convert documents to Arrow table
+            table = pa.Table.from_pylist(documents)
+            
+            # Connect to direct_links database
+            conn = duckdb.connect(direct_links_db)
+            
+            # Register Arrow table
+            conn.register("documents_table", table)
+            
+            # Create a temporary table with our documents
+            conn.execute("CREATE TEMP TABLE temp_files AS SELECT * FROM documents_table")
+            
+            # Debug: check direct_links table
+            results = conn.execute("SELECT * FROM direct_links LIMIT 5").fetchall()
+            logging.info(f"Direct links sample: {results}")
+            
+            # Join with direct_links to get API timestamps
+            results = conn.execute("""
+                WITH direct_links_latest AS (
+                    SELECT 
+                        file_id,
+                        fsentry_id,
+                        strftime(api_creation_time, '%Y-%m-%dT%H:%M:%S') as api_creation_time,
+                        strftime(api_modified_time, '%Y-%m-%dT%H:%M:%S') as api_modified_time,
+                        file_type,
+                        ROW_NUMBER() OVER (PARTITION BY file_id ORDER BY api_modified_time DESC) as rn
+                    FROM direct_links
+                )
+                SELECT 
+                    f.*,
+                    dl.api_creation_time,
+                    dl.api_modified_time,
+                    dl.fsentry_id,
+                    dl.file_type
+                FROM 
+                    temp_files f
+                LEFT JOIN 
+                    direct_links_latest dl ON f.id = dl.file_id AND dl.rn = 1
+            """).arrow()
+            
+            # Debug: check join results
+            docs = results.to_pylist()
+            logging.info(f"Join results sample: {docs[:1]}")
+            
+            # Convert to list of dicts
+            return docs
+            
+        except Exception as e:
+            logging.error(f"Error joining with direct_links database: {e}")
+            return documents
+
+    def _prepare_documents_without_join(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Prepare documents without joining with direct_links database."""
         documents = []
         for entry in entries:
             # Create a copy of the entry to avoid modifying the original
             doc = entry.copy()
             
             # Remove internal fields
-            doc.pop('relative_path', None)  # Remove relative_path as it's only for internal use
+            doc.pop('relative_path', None)
             
             # Format size for display
             if 'size_bytes' in doc:
@@ -116,17 +187,41 @@ class ElasticsearchClient:
             
         return documents
 
+    def _prepare_documents(self, entries: List[Dict[str, Any]], direct_links_db: str = None) -> List[Dict[str, Any]]:
+        """Prepare documents for Elasticsearch indexing.
+        
+        Args:
+            entries: List of file entries from scanner
+            direct_links_db: Path to direct_links database (optional)
+        """
+        if direct_links_db and os.path.exists(direct_links_db):
+            return self._prepare_documents_with_join(entries, direct_links_db)
+        else:
+            return self._prepare_documents_without_join(entries)
+
     def send_data(self, data: list):
         try:
             if not data:
-                logging.warning("No data to send to Elasticsearch")
                 return
                 
-            response = self.client.bulk(index=self.index_name, operations=data, refresh=True)
-            if response.get('errors', False):
-                logging.error(f"Bulk operation had errors: {response}")
-            else:
-                logging.info(f"Successfully indexed {len(data)//2} documents")
+            # Prepare actions for bulk indexing
+            actions = []
+            for doc in data:
+                action = {
+                    '_index': self.index_name,
+                    '_source': doc,
+                }
+                actions.append(action)
+                
+            # Send to ES
+            success, failed = helpers.bulk(
+                self.client,
+                actions,
+                refresh=True,
+                raise_on_error=False
+            )
+            logging.info(f"Indexed {success} documents, {len(failed) if failed else 0} failed")
+            
         except Exception as e:
             logging.error(f"Failed to send data to Elasticsearch: {e}")
             raise
@@ -176,30 +271,25 @@ class ElasticsearchClient:
             logging.error(f"Failed to search Elasticsearch: {e}")
             raise
 
-    def bulk_index(self, documents: List[Dict[str, Any]]) -> None:
-        """Index multiple documents in bulk."""
-        if not documents:
-            return
-
-        actions = []
-        for doc in documents:
-            # Format document
-            formatted_doc = self._format_document(doc)
-            
-            action = {
-                '_index': self.index_name,
-                '_source': formatted_doc,
-            }
-            actions.append(action)
-
+    def bulk_index(self, documents: List[Dict[str, Any]], direct_links_db: str = None):
+        """Index documents in bulk.
+        
+        Args:
+            documents: List of documents to index
+            direct_links_db: Path to direct_links database (optional)
+        """
         try:
-            success, failed = helpers.bulk(
-                self.client,
-                actions,
-                refresh=True,
-                raise_on_error=False
-            )
-            logging.info(f"Indexed {success} documents, {len(failed)} failed")
+            # Prepare documents
+            prepared_docs = self._prepare_documents(documents, direct_links_db)
+            
+            # Format documents for ES
+            formatted_docs = []
+            for doc in prepared_docs:
+                formatted_docs.append(self._format_document(doc))
+            
+            # Send to ES
+            self.send_data(formatted_docs)
+            
         except Exception as e:
-            logging.error(f"Failed to bulk index documents: {e}")
+            logging.error(f"Error during bulk indexing: {e}")
             raise
