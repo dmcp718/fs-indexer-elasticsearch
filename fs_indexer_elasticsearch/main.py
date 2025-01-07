@@ -39,11 +39,19 @@ async def main() -> int:
                        help='Path to configuration file')
     parser.add_argument('--root-path', type=str,
                        help='Root path to start indexing from')
+    parser.add_argument('--version', type=int, choices=[2, 3],
+                       help='LucidLink version (2 or 3). Overrides config file setting.')
     args = parser.parse_args()
 
     try:
         # Load configuration
         config = load_config(args.config)
+        
+        # Override lucidlink_version if provided via CLI
+        if args.version is not None:
+            if 'lucidlink_filespace' not in config:
+                config['lucidlink_filespace'] = {}
+            config['lucidlink_filespace']['lucidlink_version'] = args.version
         
         # Configure logging
         configure_logging(config)
@@ -62,6 +70,7 @@ async def main() -> int:
         es_client = None
         lucidlink_api = None
         direct_link_manager = None
+        direct_links_db = None  # Track direct_links database path
 
         # Get and normalize root path
         root_path = args.root_path or config.get('root_path', '')
@@ -83,8 +92,17 @@ async def main() -> int:
                     'lucidlink_version': config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
                 })
 
+            # Get filespace info
+            filespace_name = config['lucidlink_filespace']['name']
+            mount_point = config['lucidlink_filespace']['mount_point']
+            port = config['lucidlink_filespace']['port']
+            
+            # Set direct_links database path
+            if mode == 'elasticsearch':
+                direct_links_db = os.path.join('data', f'{filespace_name}_directlinks.duckdb')
+                logger.info(f"Using direct_links database: {direct_links_db}")
+            
             # Log mount point and root path
-            mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
             if mount_point:
                 logger.info(f"Mount point: {mount_point}")
                 if root_path.startswith(mount_point):
@@ -228,7 +246,7 @@ async def main() -> int:
                         if es_client:
                             batch.append(entry)
                             if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
-                                es_client.bulk_index(batch)
+                                es_client.bulk_index(batch, direct_links_db)
                                 batch = []
                     
                     # Skip remaining batches in index-only mode
@@ -239,7 +257,7 @@ async def main() -> int:
                         
                         # Process remaining Elasticsearch batch
                         if es_client and batch:
-                            es_client.bulk_index(batch)
+                            es_client.bulk_index(batch, direct_links_db)
             else:
                 # Process files without LucidLink
                 batch = []
@@ -267,14 +285,14 @@ async def main() -> int:
                     if es_client:
                         batch.append(entry)
                         if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
-                            es_client.bulk_index(batch)
+                            es_client.bulk_index(batch, direct_links_db)
                             batch = []
                 
                 # Skip remaining batch in index-only mode
                 if mode == 'elasticsearch':
                     # Process remaining Elasticsearch batch
                     if es_client and batch:
-                        es_client.bulk_index(batch)
+                        es_client.bulk_index(batch, direct_links_db)
             
             # Clean up missing files if needed
             if check_missing_files and current_files:

@@ -63,7 +63,7 @@ elasticsearch:
 # Available modes:
 # - elasticsearch: Run indexer and send records to Elasticsearch (default)
 # - index-only: Run indexer only, do not send records to Elasticsearch
-mode: index-only
+mode: elasticsearch
 
 # =============================================
 # Database configuration
@@ -143,7 +143,8 @@ skip_patterns:
     - '.lucid_audit'
     - '.Trash*'
     - '.Spotlight*'
-
+    - '.LP_Store*'
+    
 # =============================================
 # Logging configuration
 # =============================================
