@@ -108,7 +108,6 @@ coll = COLLECT(
     cmd = [
         str(pyinstaller_path),
         '--clean',
-        '--spec-file',
         str(spec_file),
     ]
     run_command(cmd)
