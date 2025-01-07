@@ -145,10 +145,14 @@ class KibanaDataViewManager:
                 {"name": "size", "type": "keyword", "searchable": True, "aggregatable": True},
                 {"name": "modified_time", "type": "date", "searchable": True, "aggregatable": True},
                 {"name": "creation_time", "type": "date", "searchable": True, "aggregatable": True},
+                {"name": "api_modified_time", "type": "date", "searchable": True, "aggregatable": True},
+                {"name": "api_creation_time", "type": "date", "searchable": True, "aggregatable": True},
                 {"name": "type", "type": "keyword", "searchable": True, "aggregatable": True},
                 {"name": "extension", "type": "keyword", "searchable": True, "aggregatable": True},
                 {"name": "checksum", "type": "keyword", "searchable": True, "aggregatable": True},
-                {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True}
+                {"name": "direct_link", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "fsentry_id", "type": "keyword", "searchable": True, "aggregatable": True},
+                {"name": "file_type", "type": "keyword", "searchable": True, "aggregatable": True}
             ]
         }
 
@@ -169,7 +173,7 @@ class KibanaDataViewManager:
                 "type",
                 "direct_link",
                 "filepath",
-                "fsEntryId",
+                "fsentry_id",
                 "checksum"
             ],
             "sort": [],
@@ -189,7 +193,7 @@ class KibanaDataViewManager:
                     "size": {"width": 92},
                     "extension": {"width": 120},
                     "type": {"width": 96},
-                    "fsEntryId": {"width": 129},
+                    "fsentry_id": {"width": 129},
                     "direct_link": {"width": 162}
                 }
             }
