@@ -239,10 +239,32 @@ class ParallelFindScanner:
             List of file entries
         """
         try:
-            return list(self._process_directory(directory))
+            entries = []
+            for entry in self._process_directory(directory):
+                # Generate file ID
+                relative_path = entry.get('relative_path', '')
+                if relative_path:
+                    entry['id'] = self._generate_file_id(relative_path)
+                entries.append(entry)
+            return entries
         except Exception as e:
             logger.error(f"Error processing directory {directory}: {e}")
             return []
+            
+    def _generate_file_id(self, relative_path: str) -> str:
+        """Generate a consistent file ID from the relative path.
+        
+        Args:
+            relative_path: Relative path to the file
+            
+        Returns:
+            SHA-256 hash of the path as hex string
+        """
+        import hashlib
+        # Normalize path and encode as UTF-8
+        normalized_path = os.path.normpath(relative_path).encode('utf-8')
+        # Generate SHA-256 hash
+        return hashlib.sha256(normalized_path).hexdigest()
             
     def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
         """Scan filesystem in parallel using multiple find commands.
