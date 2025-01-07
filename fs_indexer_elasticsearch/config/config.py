@@ -5,15 +5,16 @@ import logging.handlers
 
 def load_config(config_path=None):
     """Load configuration from file."""
+    # Define config locations upfront
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    config_locations = [
+        os.path.join(base_dir, 'config', 'indexer-config.yaml'),  # Project config directory
+        os.path.join(base_dir, 'indexer-config.yaml'),         # Current directory
+        os.path.join(os.path.dirname(__file__), 'indexer-config.yaml')  # Package directory
+    ]
+
     if not config_path:
-        # Try locations in order:
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        config_locations = [
-            os.path.join(base_dir, 'config', 'indexer-config.yaml'),  # Project config directory
-            os.path.join(base_dir, 'indexer-config.yaml'),         # Current directory
-            os.path.join(os.path.dirname(__file__), 'indexer-config.yaml')  # Package directory
-        ]
-        
+        # Try locations in order
         for loc in config_locations:
             if os.path.exists(loc):
                 config_path = loc
