@@ -40,7 +40,7 @@ a = Analysis(
     pathex=['{root_dir}'],
     binaries=[],
     datas=[
-        ('config/*', 'config'),
+        ('config/*.yaml', 'config'),
         ('fs-indexer-elasticsearch-docker-compose/*', 'docker-compose'),
     ],
     hiddenimports=[
