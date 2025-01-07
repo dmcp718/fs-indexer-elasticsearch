@@ -7,6 +7,8 @@ import signal
 import argparse
 import asyncio
 from typing import Dict, Any, Optional, Tuple
+import os
+import subprocess
 
 from .config.config import load_config
 from .config.logging import configure_logging
@@ -93,6 +95,18 @@ async def main() -> int:
                     logger.info(f"Root path: {root_path}")
             else:
                 logger.info(f"Root path: {root_path}")
+
+            # Validate root path exists and is accessible
+            if not os.path.exists(root_path):
+                logger.error(f"Root path does not exist: {root_path}")
+                return 1
+                
+            # Verify root path access with ls
+            try:
+                subprocess.run(['ls', '-la', root_path], check=True, capture_output=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Cannot access root path {root_path}: {e.stderr.decode()}")
+                return 1
 
             # Initialize LucidLink API if direct links are enabled
             if config.get('lucidlink_filespace', {}).get('get_direct_links', False):

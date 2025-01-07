@@ -151,6 +151,18 @@ class BatchProcessor:
         Yields:
             Dictionaries containing file information
         """
+        # Check if directory exists
+        if not os.path.exists(directory):
+            logger.error(f"Directory does not exist: {directory}")
+            raise FileNotFoundError(f"Directory not found: {directory}")
+
+        # Verify directory access with ls
+        try:
+            subprocess.run(['ls', '-la', directory], check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Cannot access directory {directory}: {e.stderr.decode()}")
+            raise
+
         exclude_hidden = self.config.get('skip_patterns', {}).get('hidden_files', True)
         cmd = self._build_find_command(directory)
         
