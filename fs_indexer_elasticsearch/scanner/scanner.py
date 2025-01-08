@@ -46,7 +46,7 @@ class FileScanner:
         """Get database path based on filespace name."""
         if self.config.get('lucidlink_filespace', {}).get('enabled', False):
             filespace = self.config.get('lucidlink_filespace', {}).get('name', 'default')
-            return f"data/{filespace}_index.duckdb"
+            return f"data/{filespace}_directlinks.duckdb"
         return "data/fs_index.duckdb"
         
     def _init_db(self):

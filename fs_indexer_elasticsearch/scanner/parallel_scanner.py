@@ -27,21 +27,18 @@ class ParallelFindScanner:
             config: Configuration dictionary
         """
         self.config = config
-        parallel_config = config.get('performance', {}).get('parallel_processing', {})
-        # Default to CPU count - 2, minimum of 1
-        default_workers = max(1, multiprocessing.cpu_count() - 2)
-        self.max_workers = parallel_config.get('max_workers', default_workers)
+        self.max_workers = config.get('performance', {}).get('parallel_processing', {}).get('max_workers', multiprocessing.cpu_count())
+        self.use_top_level = config.get('performance', {}).get('parallel_processing', {}).get('use_top_level', False)
+        self.top_level_settings = config.get('performance', {}).get('parallel_processing', {}).get('top_level_settings', {})
         self.mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
         
         # New: Top-level parallelization settings
-        self.use_top_level = parallel_config.get('use_top_level', False)
-        top_level_settings = parallel_config.get('top_level_settings', {})
-        self.min_workers = top_level_settings.get('min_workers', 4)
-        self.max_memory_per_worker = top_level_settings.get('max_memory_per_worker', '2GB')
-        self.size_threshold = top_level_settings.get('size_threshold', '1TB')
+        self.min_workers = self.top_level_settings.get('min_workers', 4)
+        self.max_memory_per_worker = self.top_level_settings.get('max_memory_per_worker', '2GB')
+        self.size_threshold = self.top_level_settings.get('size_threshold', '1TB')
         
         # Progress tracking
         self._completed_dirs = 0
@@ -148,8 +145,6 @@ class ParallelFindScanner:
         Returns:
             Optimal number of workers
         """
-        max_workers = self.config.get('performance', {}).get('parallel_processing', {}).get('max_workers', multiprocessing.cpu_count())
-        
         # Base number of workers on directory density and depth
         total_dirs = metrics['total_dirs']
         max_depth = metrics['max_depth']
@@ -158,7 +153,6 @@ class ParallelFindScanner:
             return 1
             
         # Calculate directory density score (0-2)
-        # Scale based on total directories, allowing for larger scores
         density_score = min(total_dirs / 10000, 2.0)  # Up to 20k dirs for max score
         
         # Calculate depth score (0-2)
@@ -170,7 +164,6 @@ class ParallelFindScanner:
         size_score = min(total_size_tb / size_threshold_tb, 2.0) if total_size_tb > 0 else 0
         
         # Combine scores to get worker multiplier (0.5-2.0)
-        # Weight density more heavily for better parallelization
         worker_multiplier = 0.5 + ((density_score * 1.5 + depth_score + size_score) / 4)
         
         # Calculate base workers from CPU count
@@ -180,7 +173,7 @@ class ParallelFindScanner:
         # Calculate recommended workers
         recommended = min(
             max(4, int(base_workers * worker_multiplier)),  # At least 4 workers
-            max_workers,  # Respect configured max
+            self.max_workers,  # Respect configured max
             total_dirs // 10 + 1  # Don't exceed 1 worker per 10 directories
         )
         
@@ -192,9 +185,10 @@ class ParallelFindScanner:
             f"Worker calculation: density={density_score:.2f}, depth={depth_score:.2f}, "
             f"size={size_score:.2f}, multiplier={worker_multiplier:.2f}"
         )
+        logger.info(f"Using {recommended} workers (base={base_workers}, max={self.max_workers})")
         
         return recommended
-            
+
     def split_directories(self, root_path: str) -> List[str]:
         """Split root directory into subdirectories for parallel processing.
         
@@ -814,7 +808,7 @@ class ParallelFindScanner:
         """Get database path based on filespace name."""
         if self.config.get('lucidlink_filespace', {}).get('enabled', False):
             filespace = self.config.get('lucidlink_filespace', {}).get('name', 'default')
-            return f"data/{filespace}_index.duckdb"
+            return f"data/{filespace}_directlinks.duckdb"
         return "data/fs_index.duckdb"
 
     def _get_multiprocessing_context(self) -> multiprocessing.context.BaseContext:
@@ -844,63 +838,71 @@ class ParallelFindScanner:
         """Scan filesystem in parallel and yield file entries.
         
         Args:
-            root_path: Root path to scan
+            root_path: Root directory to scan
             
-        Returns:
-            Generator yielding dictionaries containing file information
+        Yields:
+            Dict containing file metadata
         """
-        # Get list of directories to process
-        directories = self._get_top_level_directories(root_path) if self.use_top_level else self.split_directories(root_path)
-        
+        if self.use_top_level:
+            logger.info("Using top-level directory parallelization")
+            directories = self._get_top_level_directories(root_path)
+            worker_count = self.max_workers  # Use configured max workers
+        else:
+            logger.info("Using metrics-based directory parallelization")
+            metrics = self.analyze_directory_structure(root_path)
+            worker_count = self.calculate_optimal_workers(metrics)
+            directories = self.split_directories(root_path)
+            
         if not directories:
-            logger.warning("No directories to process")
             return
             
-        logger.info(f"Processing {len(directories)} directories with {self.max_workers} workers")
+        # Track failed directories for retry
+        failed_dirs = []
+        retry_count = 0
+        max_retries = 2  # Maximum number of retry attempts
         
-        # Initialize progress tracking
-        self._start_time = time.time()
-        self._completed_dirs = 0
-        self._total_dirs = len(directories)
-        
-        # Process directories in parallel
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            try:
-                # Submit all directories for processing
-                future_to_dir = {
-                    executor.submit(self._process_directory, directory): directory
-                    for directory in directories
-                }
+        while directories and retry_count <= max_retries:
+            # Create thread pool for parallel processing
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = []
                 
+                # Submit scan jobs
+                for directory in directories:
+                    future = executor.submit(self._scan_directory, directory)
+                    futures.append((directory, future))
+                    
                 # Process results as they complete
-                for future in concurrent.futures.as_completed(future_to_dir):
-                    directory = future_to_dir[future]
+                for directory, future in futures:
                     try:
-                        results = future.result()
-                        self._completed_dirs += 1
-                        
-                        # Process and yield results
-                        for entry in results:
-                            self._total_files += 1
-                            self._total_bytes += entry.get('size', 0)
-                            yield entry
+                        # Get results with timeout
+                        results = future.result(timeout=3600)  # 1 hour timeout per directory
+                        for result in results:
+                            yield result
                             
-                        # Log progress periodically
-                        self._log_progress()
-                        
+                    except TimeoutError:
+                        logger.error(f"Timeout scanning directory: {directory}")
+                        failed_dirs.append(directory)
                     except Exception as e:
-                        logger.error(f"Error processing directory {directory}: {e}")
-                        continue
+                        logger.error(f"Error scanning directory {directory}: {e}")
+                        failed_dirs.append(directory)
                         
-            except KeyboardInterrupt:
-                logger.info("Scan interrupted by user")
-                executor.shutdown(wait=False)
-                return
-                
-        # Log final statistics
-        duration = time.time() - self._start_time
-        logger.info(
-            f"Scan completed in {duration:.1f}s: "
-            f"{self._total_files:,} files, "
-            f"{self._total_bytes / (1024**3):.1f}GB"
-        )
+            # If we have failed directories, retry with reduced concurrency
+            if failed_dirs:
+                retry_count += 1
+                if retry_count <= max_retries:
+                    reduced_workers = max(1, worker_count // (retry_count * 2))
+                    logger.warning(
+                        f"Retry #{retry_count}: Retrying {len(failed_dirs)} failed directories "
+                        f"with {reduced_workers} workers"
+                    )
+                    directories = failed_dirs
+                    failed_dirs = []
+                    worker_count = reduced_workers
+                else:
+                    logger.error(
+                        f"Giving up on {len(failed_dirs)} directories after {max_retries} retries: "
+                        f"{', '.join(failed_dirs)}"
+                    )
+                    break
+            else:
+                break
