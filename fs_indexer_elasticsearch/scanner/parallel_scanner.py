@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import multiprocessing
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Generator, List
@@ -26,7 +27,9 @@ class ParallelFindScanner:
         """
         self.config = config
         parallel_config = config.get('performance', {}).get('parallel_processing', {})
-        self.max_workers = parallel_config.get('max_workers', min(4, multiprocessing.cpu_count()))
+        # Default to CPU count - 2, minimum of 1
+        default_workers = max(1, multiprocessing.cpu_count() - 2)
+        self.max_workers = parallel_config.get('max_workers', default_workers)
         self.mount_point = config.get('lucidlink_filespace', {}).get('mount_point', '')
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
@@ -723,113 +726,70 @@ class ParallelFindScanner:
             return f"data/{filespace}_index.duckdb"
         return "data/fs_index.duckdb"
 
+    def _get_multiprocessing_context(self) -> multiprocessing.context.BaseContext:
+        """Get the appropriate multiprocessing context based on the platform.
+        
+        Returns:
+            Multiprocessing context optimized for the current platform
+        """
+        system = platform.system().lower()
+        try:
+            if system == 'darwin':
+                # Use 'spawn' on macOS to avoid issues with forking
+                return multiprocessing.get_context('spawn')
+            elif system == 'linux':
+                # Use 'fork' on Linux for better performance
+                return multiprocessing.get_context('fork')
+            else:
+                # Default to 'spawn' for other platforms
+                logger.warning(f"Unknown platform {system}, defaulting to 'spawn' method")
+                return multiprocessing.get_context('spawn')
+        except Exception as e:
+            logger.error(f"Error creating multiprocessing context: {e}")
+            logger.warning("Falling back to default context")
+            return multiprocessing.get_context()
+
     def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
-        """Scan filesystem in parallel and yield file entries.
+        """Scan filesystem in parallel using multiple find commands.
         
         Args:
-            root_path: Root directory to scan
+            root_path: Root path to scan
             
         Yields:
-            Dict containing file metadata
+            Dictionaries containing file information
         """
+        # Get list of directories to process
         directories = self.split_directories(root_path)
-        if not directories:
-            return
-
-        # Initialize progress tracking
-        self._completed_dirs = 0
-        self._total_dirs = len(directories)
-        self._total_files = 0
-        self._total_bytes = 0
-        self._start_time = time.time()
-        logger.info(f"Starting scan of {self._total_dirs} directories...")
+        worker_count = self.calculate_optimal_workers(self.analyze_directory_structure(root_path))
+        logger.info(f"Using {worker_count} workers for {len(directories)} directories")
         
-        # Track failed directories for retry
-        failed_dirs = []
-        retry_count = 0
-        max_retries = 2
+        # Get platform-specific multiprocessing context
+        ctx = self._get_multiprocessing_context()
         
-        # Initialize batch for database
-        batch = []
-        
-        while directories and retry_count <= max_retries:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all jobs first
-                futures = {
-                    executor.submit(self._scan_directory, d): d 
-                    for d in directories
-                }
-                
-                # Process results as they complete
-                for future in futures:
-                    directory = futures[future]
-                    try:
-                        results = future.result(timeout=3600)
-                        
-                        # Update progress
-                        self._completed_dirs += 1
-                        dir_files = len(results)
-                        dir_bytes = sum(r['size_bytes'] for r in results)
-                        self._total_files += dir_files
-                        self._total_bytes += dir_bytes
-                        
-                        # Calculate rates
-                        elapsed = time.time() - self._start_time
-                        files_per_sec = self._total_files / elapsed if elapsed > 0 else 0
-                        bytes_per_sec = self._total_bytes / elapsed if elapsed > 0 else 0
-                        
-                        # Log progress for each completed directory
-                        progress = (self._completed_dirs / self._total_dirs) * 100
-                        logger.info(
-                            f"Progress: {self._completed_dirs}/{self._total_dirs} directories "
-                            f"({progress:.1f}%), {self._total_files:,} files found "
-                            f"({self._format_size(self._total_bytes)}, "
-                            f"{files_per_sec:.1f} files/sec, "
-                            f"{self._format_size(bytes_per_sec)}/sec)"
-                        )
-                        
-                        # Add results to batch
-                        batch.extend(results)
-                        
-                        # Process batch if it's large enough
-                        if len(batch) >= self.batch_size:
-                            self._process_batch(batch)
-                            batch = []
-                        
-                        # Yield results
-                        for result in results:
-                            yield result
-                            
-                    except TimeoutError:
-                        logger.error(f"Timeout scanning directory: {directory}")
-                        failed_dirs.append(directory)
-                    except Exception as e:
-                        logger.error(f"Error scanning directory {directory}: {e}")
-                        failed_dirs.append(directory)
-                        
-            # Process any remaining batch items
-            if batch:
-                self._process_batch(batch)
-                batch = []
+        # Process directories in parallel
+        with ProcessPoolExecutor(max_workers=worker_count,
+                               mp_context=ctx) as executor:
+            # Submit all directories for processing
+            futures = []
+            for directory in directories:
+                try:
+                    future = executor.submit(self._process_directory_wrapper, directory)
+                    futures.append(future)
+                except Exception as e:
+                    logger.error(f"Error submitting directory {directory} for processing: {e}")
+                    continue
             
-            # Handle retries
-            if failed_dirs:
-                retry_count += 1
-                if retry_count <= max_retries:
-                    reduced_workers = max(1, self.max_workers // (retry_count * 2))
-                    logger.warning(
-                        f"Retry #{retry_count}: Retrying {len(failed_dirs)} failed directories "
-                        f"with {reduced_workers} workers"
-                    )
-                    directories = failed_dirs
-                    self._total_dirs = len(directories)
-                    failed_dirs = []
-                    self.max_workers = reduced_workers
-                else:
-                    logger.error(
-                        f"Giving up on {len(failed_dirs)} directories after {max_retries} retries: "
-                        f"{', '.join(failed_dirs)}"
-                    )
-                    break
-            else:
-                break
+            # Process results as they complete
+            for future in futures:
+                try:
+                    result = future.result(timeout=300)  # 5 minute timeout per directory
+                    for entry in result:
+                        yield entry
+                except TimeoutError:
+                    logger.error("Directory processing timed out after 5 minutes")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing directory batch: {e}")
+                    if hasattr(e, '__cause__') and e.__cause__:
+                        logger.error(f"Caused by: {e.__cause__}")
+                    continue

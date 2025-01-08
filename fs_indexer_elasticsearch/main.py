@@ -63,7 +63,7 @@ Examples:
     group.add_argument('--mode', type=str, choices=['elasticsearch', 'index-only'],
                       default='elasticsearch', metavar='MODE',
                       help='Operating mode: elasticsearch (default) or index-only')
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
 
     try:
         # Load configuration
