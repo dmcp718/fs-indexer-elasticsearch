@@ -697,14 +697,11 @@ class ParallelFindScanner:
         db_path = self._get_db_path()
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        # Connect with read_only=True for worker processes to avoid lock conflicts
-        self.conn = duckdb.connect(db_path, read_only=True)
+        # Always connect in read-write mode initially
+        self.conn = duckdb.connect(db_path)
         
-        # Create tables if they don't exist (only in main process)
+        # Create tables if they don't exist
         if not self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files'").fetchone():
-            self.conn.close()
-            # Reconnect in read-write mode to create tables
-            self.conn = duckdb.connect(db_path)
             self.conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id VARCHAR,
@@ -721,18 +718,8 @@ class ParallelFindScanner:
                 last_seen TIMESTAMP
             )
             """)
-            
-            # Enable optimizations
-            self.conn.execute("SET enable_progress_bar=false")
-            self.conn.execute("SET temp_directory='data'")
-            self.conn.execute("SET memory_limit='4GB'")
-            self.conn.execute("PRAGMA threads=8")
-            
-            # Close and reopen in read-only mode
-            self.conn.close()
-            self.conn = duckdb.connect(db_path, read_only=True)
         
-        # Enable optimizations for read-only connections
+        # Enable optimizations
         self.conn.execute("SET enable_progress_bar=false")
         self.conn.execute("SET temp_directory='data'")
         self.conn.execute("SET memory_limit='4GB'")
