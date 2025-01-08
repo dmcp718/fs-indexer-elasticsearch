@@ -10,6 +10,7 @@ import pyarrow as pa
 import os
 import fnmatch
 from ..lucidlink.lucidlink_api import LucidLinkAPI
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,11 @@ class DirectLinkManager:
                 batch = items[i:i + self.batch_size]
                 for item in batch:
                     try:
+                        # Validate required fields
+                        if not item.get('id') or not item.get('filepath'):
+                            logger.warning(f"Skipping direct link generation for item missing required fields: {item}")
+                            continue
+
                         # Skip if path matches skip patterns
                         if any(fnmatch.fnmatch(item.get('filepath', ''), pattern) for pattern in skip_patterns):
                             logger.debug(f"Skipping direct link generation for {item.get('filepath', '')} due to skip pattern")
@@ -168,7 +174,6 @@ class DirectLinkManager:
                             logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item.get('filepath', '')}")
                             continue
                         raise
-
             if results:
                 try:
                     # Convert to Arrow table for efficient bulk insert
