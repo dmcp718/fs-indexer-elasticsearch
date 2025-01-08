@@ -34,6 +34,7 @@ class ParallelFindScanner:
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
+        self.conn = None  # Initialize conn attribute
         
         # Progress tracking
         self._completed_dirs = 0
@@ -406,6 +407,7 @@ class ParallelFindScanner:
         Returns:
             List of file entries
         """
+        self.conn = None  # Initialize conn attribute
         try:
             # Initialize database connection for this worker process
             if self.config.get('database', {}).get('enabled', True):
@@ -424,7 +426,10 @@ class ParallelFindScanner:
         except Exception as e:
             logger.error(f"Error processing directory {directory}: {e}")
             if self.conn:
-                self.conn.close()
+                try:
+                    self.conn.close()
+                except:
+                    pass
                 self.conn = None
             return []
             
@@ -625,6 +630,7 @@ class ParallelFindScanner:
                 # Generate relative path
                 relative_path = filepath
                 if self.root_path:
+                    # Remove root path prefix if it exists
                     if relative_path.startswith(self.root_path):
                         relative_path = relative_path[len(self.root_path):]
                         if not relative_path.startswith('/'):
@@ -703,11 +709,18 @@ class ParallelFindScanner:
 
     def _init_db(self):
         """Setup DuckDB database with optimizations."""
-        # Connect to database
-        self.conn = duckdb.connect(self._get_db_path())
+        db_path = self._get_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        # Create table if not exists
-        self.conn.execute("""
+        # Connect with read_only=True for worker processes to avoid lock conflicts
+        self.conn = duckdb.connect(db_path, read_only=True)
+        
+        # Create tables if they don't exist (only in main process)
+        if not self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files'").fetchone():
+            self.conn.close()
+            # Reconnect in read-write mode to create tables
+            self.conn = duckdb.connect(db_path)
+            self.conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id VARCHAR,
                 name VARCHAR,
@@ -722,9 +735,19 @@ class ParallelFindScanner:
                 direct_link VARCHAR,
                 last_seen TIMESTAMP
             )
-        """)
+            """)
+            
+            # Enable optimizations
+            self.conn.execute("SET enable_progress_bar=false")
+            self.conn.execute("SET temp_directory='data'")
+            self.conn.execute("SET memory_limit='4GB'")
+            self.conn.execute("PRAGMA threads=8")
+            
+            # Close and reopen in read-only mode
+            self.conn.close()
+            self.conn = duckdb.connect(db_path, read_only=True)
         
-        # Enable optimizations
+        # Enable optimizations for read-only connections
         self.conn.execute("SET enable_progress_bar=false")
         self.conn.execute("SET temp_directory='data'")
         self.conn.execute("SET memory_limit='4GB'")
