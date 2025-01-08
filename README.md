@@ -108,78 +108,12 @@ The indexer uses several strategies to achieve high performance:
    - Optimized batch upserts
 
 4. **Resource Management**
+   - Platform-optimized multiprocessing (fork on Linux, spawn on macOS)
    - Dynamic batch sizing based on directory depth
    - Controlled prefetching to prevent API overload
    - Efficient memory usage with generators
-
-## Building the Application
-
-### Prerequisites
-- Python 3.8+
-- Virtual environment
-- PyInstaller (installed via requirements.txt)
-
-### Platform-Specific Builds
-
-PyInstaller creates executables for the platform it runs on. To create builds for different platforms:
-
-#### macOS Build
-On a macOS system:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python build_app.py
-```
-The macOS executable will be created in `dist/fs-indexer-es-darwin/`
-
-#### Linux Build
-On a Linux system:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python build_app.py
-```
-The Linux executable will be created in `dist/fs-indexer-es-linux/`
-
-#### Windows 11 Build
-On a Windows 11 system:
-```powershell
-# Create and activate virtual environment
-python -m venv venv
-.\venv\Scripts\activate
-
-# Install requirements
-pip install -r requirements.txt
-
-# Install pywin32 (Windows-specific requirement)
-pip install pywin32
-
-# Run the build script
-python build_app.py
-```
-The Windows executable will be created in `dist\fs-indexer-es-win\`
-
-Note: On Windows, you may need to:
-1. Install Python 3.8+ from the [official Python website](https://www.python.org/downloads/)
-2. Add Python to your system PATH during installation
-3. Install Visual Studio Build Tools with C++ workload for SQLite compilation
-4. Run PowerShell or Command Prompt as Administrator if you encounter permission issues
-
-Note: You must build on each target platform separately. Cross-compilation is not supported by PyInstaller.
-
-### Running the Application
-
-From the `dist/fs-indexer-es-darwin` directory:
-
-```bash
-# Using the executable directly
-./fs-indexer-es --root-path /path/to/index
-
-# Using the helper script
-./run-indexer-es.sh --root-path /path/to/index
-```
+   - Automatic worker count adjustment based on system resources
+   - Robust error handling and process recovery
 
 ### Command Line Arguments
 
