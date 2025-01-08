@@ -184,7 +184,6 @@ class ParallelFindScanner:
             f"Worker calculation: density={density_score:.2f}, depth={depth_score:.2f}, "
             f"size={size_score:.2f}, multiplier={worker_multiplier:.2f}"
         )
-        logger.info(f"Using {recommended} workers (base={base_workers}, max={max_workers})")
         
         return recommended
             
@@ -245,16 +244,13 @@ class ParallelFindScanner:
                 # but maintain reasonable dir/worker ratio
                 optimal_workers = max(1, min(dir_count // 4, self.max_workers))
                 
-            # Always log worker allocation for transparency
-            dirs_per_worker = dir_count / (optimal_workers or 1)
-            if optimal_workers != original_workers:
-                logger.info(f"Adjusting worker count to {optimal_workers} based on {dir_count} directories ({dirs_per_worker:.1f} dirs/worker)")
-            else:
-                logger.info(f"Using {optimal_workers} workers for {dir_count} directories ({dirs_per_worker:.1f} dirs/worker)")
+            # Adjust worker count based on directory count
+            dirs_per_worker = dir_count / optimal_workers
+            if dirs_per_worker < 1:
+                optimal_workers = max(1, dir_count)
+                dirs_per_worker = dir_count / optimal_workers
                 
-            self.max_workers = optimal_workers
-            logger.info(f"Split into {len(directories)} directories for parallel processing")
-            return directories
+            return optimal_workers
             
         except Exception as e:
             logger.error(f"Error splitting directories: {e}")
