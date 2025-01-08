@@ -2,14 +2,15 @@
 
 import logging
 import os
+import time
 import subprocess
 import multiprocessing
+import concurrent.futures
 import platform
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Generator, List
+from typing import Dict, Any, List, Generator
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-import time
 import hashlib
 import duckdb
 import pyarrow as pa
@@ -34,6 +35,13 @@ class ParallelFindScanner:
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
+        
+        # New: Top-level parallelization settings
+        self.use_top_level = parallel_config.get('use_top_level', False)
+        top_level_settings = parallel_config.get('top_level_settings', {})
+        self.min_workers = top_level_settings.get('min_workers', 4)
+        self.max_memory_per_worker = top_level_settings.get('max_memory_per_worker', '2GB')
+        self.size_threshold = top_level_settings.get('size_threshold', '1TB')
         
         # Progress tracking
         self._completed_dirs = 0
@@ -257,6 +265,73 @@ class ParallelFindScanner:
             logger.error(f"Error splitting directories: {e}")
             return [root_path]
             
+    def _get_top_level_directories(self, root_path: str) -> List[str]:
+        """Get list of top-level directories for parallel processing.
+        
+        Args:
+            root_path: Root path to analyze
+            
+        Returns:
+            List of top-level directory paths
+        """
+        if not self.use_top_level:
+            return []
+            
+        cmd = [
+            'find',
+            os.path.expanduser(root_path),
+            '-mindepth', '1',
+            '-maxdepth', '1',
+            '-type', 'd',
+            '-not', '-path', '*/.*'
+        ]
+        
+        # Add skip patterns
+        skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
+        for pattern in skip_patterns:
+            cmd.extend(['-not', '-path', f'*/{pattern}'])
+            cmd.extend(['-not', '-path', f'*/{pattern}/*'])
+            
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=300  # 5 minute timeout
+            )
+            
+            directories = [d.strip() for d in result.stdout.splitlines()]
+            if not directories:
+                logger.info("No top-level directories found, using root path")
+                return [root_path]
+                
+            # Calculate optimal workers based on directory count
+            dir_count = len(directories)
+            original_workers = self.max_workers
+            
+            # Use configuration settings
+            min_workers = self.min_workers
+            optimal_workers = max(min_workers, min(dir_count, self.max_workers))
+            
+            # Log worker allocation
+            dirs_per_worker = dir_count / (optimal_workers or 1)
+            if optimal_workers != original_workers:
+                logger.info(f"Adjusting worker count to {optimal_workers} based on {dir_count} directories ({dirs_per_worker:.1f} dirs/worker)")
+            else:
+                logger.info(f"Using {optimal_workers} workers for {dir_count} directories ({dirs_per_worker:.1f} dirs/worker)")
+                
+            self.max_workers = optimal_workers
+            logger.info(f"Split into {len(directories)} directories for parallel processing")
+            return directories
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout analyzing directory structure of {root_path}")
+            return [root_path]
+        except Exception as e:
+            logger.error(f"Error analyzing directory structure: {e}")
+            return [root_path]
+
     def _parse_find_line(self, line: str, exclude_hidden: bool = False) -> Dict[str, Any]:
         """Parse a line of find -ls output.
         
@@ -356,59 +431,68 @@ class ParallelFindScanner:
             logger.error(f"Error parsing find output line: {e}")
             return None
 
-    def _process_directory(self, directory: str) -> Generator[Dict[str, Any], None, None]:
-        """Process a directory using find command.
+    def _process_directory(self, directory: str) -> List[Dict[str, Any]]:
+        """Process a single directory.
         
         Args:
-            directory: Directory to process
+            directory: Directory path to process
             
-        Yields:
-            File entries
+        Returns:
+            List of file entry dictionaries
         """
-        # Build find command with exclusions
-        exclude_hidden = self.config.get('skip_patterns', {}).get('hidden_files', True)
-        exclude_hidden_dirs = self.config.get('skip_patterns', {}).get('hidden_dirs', True)
-        skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
-        
-        cmd = ['find', os.path.expanduser(directory)]
-        
-        # Add exclusions for hidden files/dirs
-        if exclude_hidden or exclude_hidden_dirs:
-            cmd.extend(['-not', '-path', '*/.*'])
-            
-        # Add skip patterns
-        for pattern in skip_patterns:
-            find_pattern = f"*/{pattern}"
-            if not find_pattern.startswith('*/'):
-                find_pattern = f"*/{find_pattern}"
-            cmd.extend(['-not', '-path', find_pattern])
-            
-        # Add -ls for detailed listing
-        cmd.append('-ls')
-        
         try:
-            process = subprocess.Popen(
+            # Build find command with -ls for detailed output
+            cmd = [
+                'find',
+                os.path.expanduser(directory),
+                '-ls',
+                '-not', '-path', '*/.*',  # Skip hidden files
+                '-not', '-name', '.*',    # Skip hidden files by name
+                '-type', 'f'              # Only files
+            ]
+            
+            # Add skip patterns
+            skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
+            for pattern in skip_patterns:
+                cmd.extend(['-not', '-path', f'*/{pattern}'])
+                cmd.extend(['-not', '-path', f'*/{pattern}/*'])
+                
+            # Run find command
+            result = subprocess.run(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
-                bufsize=1,
-                encoding='utf-8'
+                check=True,
+                timeout=300  # 5 minute timeout
             )
             
-            # Process output directly
-            for line in process.stdout:
-                entry = self._parse_find_line(line.strip(), exclude_hidden)
-                if entry:
-                    yield entry
+            # Process results
+            entries = []
+            skipped = 0
+            for line in result.stdout.splitlines():
+                try:
+                    entry = self._parse_find_line(line)
+                    if entry:
+                        entries.append(entry)
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    logger.error(f"Error parsing line: {e}")
+                    skipped += 1
+                    continue
                     
+            if self.debug and skipped > 0:
+                logger.debug(f"Skipped {skipped} entries in {directory}")
+                
+            return entries
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout running find command on {directory}")
+            return []
         except Exception as e:
             logger.error(f"Error processing directory {directory}: {e}")
-            
-        finally:
-            if process:
-                process.terminate()
-                
+            return []
+
     def _process_directory_wrapper(self, directory: str) -> List[Dict[str, Any]]:
         """Wrapper to process a directory and return results as list.
         
@@ -420,7 +504,7 @@ class ParallelFindScanner:
         """
         try:
             # Process directory and collect results without database
-            return list(self._process_directory(directory))
+            return self._process_directory(directory)
         except Exception as e:
             logger.error(f"Error processing directory {directory}: {e}")
             return []
@@ -631,8 +715,8 @@ class ParallelFindScanner:
                 return {
                     'id': self._generate_file_id(relative_path),
                     'name': Path(filepath).name,
-                    'relative_path': relative_path,
-                    'filepath': filepath,
+                    'relative_path': relative_path,  # Full path relative to mount point
+                    'filepath': filepath,  # Clean path for external use
                     'size_bytes': size,
                     'modified_time': timestamp,
                     'creation_time': timestamp,
@@ -757,62 +841,66 @@ class ParallelFindScanner:
             return multiprocessing.get_context()
 
     def scan(self, root_path: str) -> Generator[Dict[str, Any], None, None]:
-        """Scan filesystem in parallel using multiple find commands.
+        """Scan filesystem in parallel and yield file entries.
         
         Args:
             root_path: Root path to scan
             
-        Yields:
-            Dictionaries containing file information
+        Returns:
+            Generator yielding dictionaries containing file information
         """
         # Get list of directories to process
-        directories = self.split_directories(root_path)
-        worker_count = self.calculate_optimal_workers(self.analyze_directory_structure(root_path))
-        logger.info(f"Using {worker_count} workers for {len(directories)} directories")
+        directories = self._get_top_level_directories(root_path) if self.use_top_level else self.split_directories(root_path)
         
-        # Get platform-specific multiprocessing context
-        ctx = self._get_multiprocessing_context()
+        if not directories:
+            logger.warning("No directories to process")
+            return
+            
+        logger.info(f"Processing {len(directories)} directories with {self.max_workers} workers")
+        
+        # Initialize progress tracking
+        self._start_time = time.time()
+        self._completed_dirs = 0
+        self._total_dirs = len(directories)
         
         # Process directories in parallel
-        with ProcessPoolExecutor(max_workers=worker_count,
-                               mp_context=ctx) as executor:
-            # Submit all directories for processing
-            futures = []
-            for directory in directories:
-                try:
-                    future = executor.submit(self._process_directory_wrapper, directory)
-                    futures.append(future)
-                except Exception as e:
-                    logger.error(f"Error submitting directory {directory} for processing: {e}")
-                    continue
-            
-            # Process results as they complete
-            batch = []
-            for future in futures:
-                try:
-                    result = future.result(timeout=300)  # 5 minute timeout per directory
-                    batch.extend(result)
-                    
-                    # Process batch when it reaches batch size
-                    if len(batch) >= self.batch_size:
-                        if self._db_conn:
-                            self._process_batch(batch)
-                        for entry in batch:
-                            yield entry
-                        batch = []
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            try:
+                # Submit all directories for processing
+                future_to_dir = {
+                    executor.submit(self._process_directory, directory): directory
+                    for directory in directories
+                }
+                
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(future_to_dir):
+                    directory = future_to_dir[future]
+                    try:
+                        results = future.result()
+                        self._completed_dirs += 1
                         
-                except TimeoutError:
-                    logger.error("Directory processing timed out after 5 minutes")
-                    continue
-                except Exception as e:
-                    logger.error(f"Error processing directory batch: {e}")
-                    if hasattr(e, '__cause__') and e.__cause__:
-                        logger.error(f"Caused by: {e.__cause__}")
-                    continue
-            
-            # Process remaining entries
-            if batch:
-                if self._db_conn:
-                    self._process_batch(batch)
-                for entry in batch:
-                    yield entry
+                        # Process and yield results
+                        for entry in results:
+                            self._total_files += 1
+                            self._total_bytes += entry.get('size', 0)
+                            yield entry
+                            
+                        # Log progress periodically
+                        self._log_progress()
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing directory {directory}: {e}")
+                        continue
+                        
+            except KeyboardInterrupt:
+                logger.info("Scan interrupted by user")
+                executor.shutdown(wait=False)
+                return
+                
+        # Log final statistics
+        duration = time.time() - self._start_time
+        logger.info(
+            f"Scan completed in {duration:.1f}s: "
+            f"{self._total_files:,} files, "
+            f"{self._total_bytes / (1024**3):.1f}GB"
+        )

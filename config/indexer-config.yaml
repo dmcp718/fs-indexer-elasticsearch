@@ -99,6 +99,11 @@ performance:
   parallel_processing:
     enabled: true
     max_workers: 10  # Maximum workers (CPU cores - 2), will adjust down based on directory count
+    use_top_level: true  # Use top-level directory based parallelization
+    top_level_settings:  # Settings for top-level parallelization
+      min_workers: 8  # Minimum number of workers
+      max_memory_per_worker: "2GB"  # Maximum memory per worker
+      size_threshold: "1TB"  # Maximum total size for using top-level parallelization
     batch_size: 100000  # Optimized: Larger batch size for better throughput
     
   # File scanning settings
