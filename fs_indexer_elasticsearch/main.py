@@ -74,7 +74,14 @@ Examples:
     group.add_argument('--mode', type=str, choices=['elasticsearch', 'index-only'],
                       default='elasticsearch', metavar='MODE',
                       help='Operating mode: elasticsearch (default) or index-only')
-    args = parser.parse_args()
+
+    # Parse known args to handle multiprocessing arguments
+    args, unknown = parser.parse_known_args()
+
+    # Filter out multiprocessing arguments
+    if unknown and any('--multiprocessing-fork' in arg for arg in unknown):
+        # This is a multiprocessing child process
+        return 0
 
     try:
         # Load configuration
