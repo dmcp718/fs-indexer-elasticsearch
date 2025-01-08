@@ -35,11 +35,6 @@ class ParallelFindScanner:
         self.debug = config.get('debug', False)
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
         
-        # Initialize database only if enabled
-        self.conn = None
-        if config.get('database', {}).get('enabled', True):
-            self._init_db()
-        
         # Progress tracking
         self._completed_dirs = 0
         self._total_dirs = 0
@@ -412,9 +407,25 @@ class ParallelFindScanner:
             List of file entries
         """
         try:
-            return list(self._process_directory(directory))
+            # Initialize database connection for this worker process
+            if self.config.get('database', {}).get('enabled', True):
+                self._init_db()
+                
+            # Process directory and collect results
+            results = list(self._process_directory(directory))
+            
+            # Close database connection
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+                
+            return results
+            
         except Exception as e:
             logger.error(f"Error processing directory {directory}: {e}")
+            if self.conn:
+                self.conn.close()
+                self.conn = None
             return []
             
     def _scan_directory(self, directory: str) -> List[Dict[str, Any]]:
