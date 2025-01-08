@@ -34,7 +34,11 @@ class ParallelFindScanner:
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
-        self.conn = None  # Initialize conn attribute
+        self.conn = None
+        
+        # Initialize database in main process
+        if config.get('database', {}).get('enabled', True):
+            self._init_db()
         
         # Progress tracking
         self._completed_dirs = 0
@@ -407,30 +411,11 @@ class ParallelFindScanner:
         Returns:
             List of file entries
         """
-        self.conn = None  # Initialize conn attribute
         try:
-            # Initialize database connection for this worker process
-            if self.config.get('database', {}).get('enabled', True):
-                self._init_db()
-                
-            # Process directory and collect results
-            results = list(self._process_directory(directory))
-            
-            # Close database connection
-            if self.conn:
-                self.conn.close()
-                self.conn = None
-                
-            return results
-            
+            # Process directory and collect results without database
+            return list(self._process_directory(directory))
         except Exception as e:
             logger.error(f"Error processing directory {directory}: {e}")
-            if self.conn:
-                try:
-                    self.conn.close()
-                except:
-                    pass
-                self.conn = None
             return []
             
     def _scan_directory(self, directory: str) -> List[Dict[str, Any]]:
@@ -814,11 +799,20 @@ class ParallelFindScanner:
                     continue
             
             # Process results as they complete
+            batch = []
             for future in futures:
                 try:
                     result = future.result(timeout=300)  # 5 minute timeout per directory
-                    for entry in result:
-                        yield entry
+                    batch.extend(result)
+                    
+                    # Process batch when it reaches batch size
+                    if len(batch) >= self.batch_size:
+                        if self.conn:
+                            self._process_batch(batch)
+                        for entry in batch:
+                            yield entry
+                        batch = []
+                        
                 except TimeoutError:
                     logger.error("Directory processing timed out after 5 minutes")
                     continue
@@ -827,3 +821,10 @@ class ParallelFindScanner:
                     if hasattr(e, '__cause__') and e.__cause__:
                         logger.error(f"Caused by: {e.__cause__}")
                     continue
+            
+            # Process remaining entries
+            if batch:
+                if self.conn:
+                    self._process_batch(batch)
+                for entry in batch:
+                    yield entry
