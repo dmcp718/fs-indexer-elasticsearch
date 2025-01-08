@@ -34,11 +34,6 @@ class ParallelFindScanner:
         self.root_path = config.get('root_path', '/')
         self.debug = config.get('debug', False)
         self.batch_size = config.get('performance', {}).get('scan_chunk_size', 25000)
-        self.conn = None
-        
-        # Initialize database in main process
-        if config.get('database', {}).get('enabled', True):
-            self._init_db()
         
         # Progress tracking
         self._completed_dirs = 0
@@ -48,6 +43,21 @@ class ParallelFindScanner:
         self._last_progress = 0
         self._start_time = 0
         self._progress_interval = 5  # Log progress every 5 seconds
+        
+        # Initialize database in main process
+        self._db_conn = None
+        if config.get('database', {}).get('enabled', True):
+            self._init_db()
+            
+    def __getstate__(self):
+        """Return state for pickling, excluding database connection."""
+        state = self.__dict__.copy()
+        state['_db_conn'] = None  # Don't pickle the database connection
+        return state
+        
+    def __setstate__(self, state):
+        """Restore state after unpickling."""
+        self.__dict__.update(state)
         
     def _log_progress(self, completed_files: int = 0):
         """Log progress if enough time has elapsed."""
@@ -418,11 +428,11 @@ class ParallelFindScanner:
             logger.error(f"Error processing directory {directory}: {e}")
             return []
             
-    def _scan_directory(self, directory: str) -> List[Dict[str, Any]]:
+    def _scan_directory(self, root_path: str) -> List[Dict[str, Any]]:
         """Scan a single directory and return file entries.
         
         Args:
-            directory: Directory path to scan
+            root_path: Root path to scan
             
         Returns:
             List of file entry dictionaries
@@ -431,7 +441,7 @@ class ParallelFindScanner:
             # Build find command with -ls for detailed output
             cmd = [
                 'find',
-                os.path.expanduser(directory),
+                os.path.expanduser(root_path),
                 '-ls',
                 '-not', '-path', '*/.*',  # Skip hidden files
                 '-not', '-name', '.*',    # Skip hidden files by name
@@ -475,15 +485,15 @@ class ParallelFindScanner:
                     continue
                     
             if self.debug and skipped > 0:
-                logger.debug(f"Skipped {skipped} entries in {directory}")
+                logger.debug(f"Skipped {skipped} entries in {root_path}")
                 
             return entries
             
         except subprocess.TimeoutExpired:
-            logger.error(f"Timeout running find command on {directory}")
+            logger.error(f"Timeout running find command on {root_path}")
             raise
         except Exception as e:
-            logger.error(f"Error scanning directory {directory}: {e}")
+            logger.error(f"Error scanning directory {root_path}: {e}")
             raise
             
     def _generate_file_id(self, relative_path: str) -> str:
@@ -644,26 +654,20 @@ class ParallelFindScanner:
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> None:
         """Process a batch of file entries."""
-        if not batch:
+        if not batch or not self._db_conn:
             return
             
-        if not self.config.get('database', {}).get('enabled', True):
-            return  # Skip database operations if disabled
-            
         try:
-            if not self.conn:
-                self._init_db()
-                
             # Convert batch to Arrow table
             arrow_table = pa.Table.from_pylist(batch)
             
             # Register Arrow table with DuckDB
-            self.conn.execute("BEGIN TRANSACTION")
+            self._db_conn.execute("BEGIN TRANSACTION")
             try:
-                self.conn.register('arrow_table', arrow_table)
+                self._db_conn.register('arrow_table', arrow_table)
                 
                 # Insert new records
-                self.conn.execute("""
+                self._db_conn.execute("""
                     INSERT INTO files 
                     SELECT * FROM arrow_table
                     WHERE NOT EXISTS (
@@ -683,9 +687,9 @@ class ParallelFindScanner:
                         last_seen = excluded.last_seen
                     WHERE excluded.modified_time > files.modified_time
                 """)
-                self.conn.execute("COMMIT")
+                self._db_conn.execute("COMMIT")
             except Exception as e:
-                self.conn.execute("ROLLBACK")
+                self._db_conn.execute("ROLLBACK")
                 raise e
             
         except Exception as e:
@@ -698,11 +702,11 @@ class ParallelFindScanner:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
         # Always connect in read-write mode initially
-        self.conn = duckdb.connect(db_path)
+        self._db_conn = duckdb.connect(db_path)
         
         # Create tables if they don't exist
-        if not self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files'").fetchone():
-            self.conn.execute("""
+        if not self._db_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='files'").fetchone():
+            self._db_conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id VARCHAR,
                 name VARCHAR,
@@ -720,10 +724,10 @@ class ParallelFindScanner:
             """)
         
         # Enable optimizations
-        self.conn.execute("SET enable_progress_bar=false")
-        self.conn.execute("SET temp_directory='data'")
-        self.conn.execute("SET memory_limit='4GB'")
-        self.conn.execute("PRAGMA threads=8")
+        self._db_conn.execute("SET enable_progress_bar=false")
+        self._db_conn.execute("SET temp_directory='data'")
+        self._db_conn.execute("SET memory_limit='4GB'")
+        self._db_conn.execute("PRAGMA threads=8")
         
     def _get_db_path(self) -> str:
         """Get database path based on filespace name."""
@@ -794,7 +798,7 @@ class ParallelFindScanner:
                     
                     # Process batch when it reaches batch size
                     if len(batch) >= self.batch_size:
-                        if self.conn:
+                        if self._db_conn:
                             self._process_batch(batch)
                         for entry in batch:
                             yield entry
@@ -811,7 +815,7 @@ class ParallelFindScanner:
             
             # Process remaining entries
             if batch:
-                if self.conn:
+                if self._db_conn:
                     self._process_batch(batch)
                 for entry in batch:
                     yield entry
