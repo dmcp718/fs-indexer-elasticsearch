@@ -162,11 +162,10 @@ Examples:
                 # Get performance settings
                 perf_settings = config.get('performance', {})
                 batch_sizes = perf_settings.get('batch_sizes', {})
-                queue_sizes = perf_settings.get('queue_sizes', {})
                 
                 # Add performance settings to v3_settings for compatibility
-                v3_settings['batch_size'] = batch_sizes.get('direct_links', 50000)
-                v3_settings['queue_size'] = queue_sizes.get('direct_links', 50000)
+                v3_settings['batch_size'] = batch_sizes.get('direct_links', 100000)  # Default to 100K
+                v3_settings['queue_size'] = v3_settings.get('batch_size', 100000)  # Match batch size
                 
                 # Log config without mount point and root path
                 config_log = config.get('lucidlink_filespace', {}).copy()

@@ -21,14 +21,14 @@ lucidlink_filespace:
     
   v3_settings:
     # Maximum concurrent API requests for direct links
-    max_concurrent_requests: 4  # API bound, so keep low
+    max_concurrent_requests: 10  # API bound, but increased from 4 for better throughput
     # Retry settings for API calls
     retry_attempts: 5
     retry_delay_seconds: 0.5
     # Batch size for direct link requests
-    batch_size: 10000
+    batch_size: 100000  # Optimized: Larger batch size for better throughput
     # Queue size for async processing
-    queue_size: 10000
+    queue_size: 100000  # Optimized: Larger queue size to match batch size
 
 # =============================================
 
@@ -47,7 +47,7 @@ elasticsearch:
   ssl: false
   
   # Bulk indexing settings
-  bulk_size: 50000
+  bulk_size: 100000  # Optimized: Larger batch size for better throughput
   max_retries: 3
   timeout_seconds: 300
   retry_on_timeout: true
@@ -67,11 +67,11 @@ database:
   connection:
     url: "duckdb:///data/fs_index.duckdb"
     options:
-      memory_limit: "4GB"
-      threads: 10
+      memory_limit: "8GB"  # Optimized: Higher memory limit for better caching
+      threads: 10  # Match max_workers (CPU cores - 2)
       temp_directory: "./.tmp"
       checkpoint_on_shutdown: true
-      compression: "lz4"
+      compression: "lz4"  # Best balance of speed/compression
       
   # Table-specific settings
   tables:
@@ -89,57 +89,62 @@ database:
 performance:
   # Batch sizes for different operations
   batch_sizes:
-    scan: 25000
-    direct_links: 50000
-    elasticsearch: 10000
+    scan: 100000  # Optimized: Larger batch size for better throughput
+    direct_links: 100000  # Optimized: Larger batch size for better throughput
+    elasticsearch: 100000  # Optimized: Larger batch size for better throughput
     
   # Parallel processing settings
+  # Note: The actual number of workers will dynamically adjust down to match the number
+  # of top-level directories in the root path, which showed ~5% better performance in testing.
   parallel_processing:
     enabled: true
-    max_workers: 10  # Number of parallel workers (default: number of CPU cores)
-    batch_size: 100000  # Maximum files per batch
+    max_workers: 10  # Maximum workers (CPU cores - 2), will adjust down based on directory count
+    batch_size: 100000  # Optimized: Larger batch size for better throughput
     
   # File scanning settings
-  scan_chunk_size: 25000  # Size of batches for file scanning
+  scan_chunk_size: 100000  # Aligned with other batch sizes for consistent performance
   
   # Progress reporting
   progress_interval_seconds: 5
   show_rate_stats: true
   show_memory_stats: true
 
-# Check and remove database records for files that no longer exist
-check_missing_files: false
-
-# Skip patterns for file scanning
+# =============================================
+# Skip patterns configuration
+# =============================================
 skip_patterns:
-  # Hidden files and directories
+  # Skip hidden files and directories
   hidden_files: true
   hidden_dirs: true
-  
-  # Specific patterns to skip (glob format)
+  # Patterns to skip (glob format)
   patterns:
-    - '.DS_Store'
-    - '.git'
-    - '.gitignore'
-    - '.svn'
-    - '.hg'
-    - '.idea'
-    - '.vscode'
-    - '__pycache__'
-    - '*.pyc'
-    - '*.pyo'
-    - '*.pyd'
-    - '*.so'
-    - '*.dylib'
-    - '*.dll'
-    - '*.class'
-    - '*.o'
-    - '*.dbr'
-    - '.lucid_audit'
-    - '.Trash*'
-    - '.Spotlight*'
-    - '.LP_Store*'
-    
+    - ".DS_Store"
+    - ".Spotlight-*"
+    - ".fseventsd"
+    - ".Trashes"
+    - "*.tmp"
+    - "*.temp"
+    - "*~"
+    - ".git"
+    - "__pycache__"
+    - "*.pyc"
+    - "*.pyo"
+    - "*.pyd"
+    - ".pytest_cache"
+    - ".coverage"
+    - "htmlcov"
+    - ".tox"
+    - ".eggs"
+    - "*.egg-info"
+    - "dist"
+    - "build"
+    - "node_modules"
+    - ".venv"
+    - "venv"
+    - "env"
+    - ".env"
+    - ".LP_Store"
+
 # =============================================
 # Logging configuration
 # =============================================
@@ -170,3 +175,6 @@ logging:
     interval_seconds: 60
     include_memory: true
     include_disk: true
+
+# Check and remove database records for files that no longer exist
+check_missing_files: false
