@@ -3,7 +3,6 @@
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true  # Enable LucidLink integration
-  get_direct_links: true  # Set to false to skip generating direct links (faster indexing)
   lucidlink_version: 3  # LucidLink API version (2 or 3)
   port: 9778  # LucidLink API port
   calculate_directory_sizes: true  # Calculate directory sizes (requires additional processing)

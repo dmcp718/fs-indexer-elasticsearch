@@ -148,8 +148,8 @@ Examples:
                 logger.error(f"Cannot access root path {root_path}: {e.stderr.decode()}")
                 return 1
 
-            # Initialize LucidLink API if direct links are enabled
-            if config.get('lucidlink_filespace', {}).get('get_direct_links', False):
+            # Initialize LucidLink API if in elasticsearch mode
+            if mode == 'elasticsearch' and config.get('lucidlink_filespace', {}).get('enabled', False):
                 # Get v3 settings
                 v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
                 if not v3_settings:
