@@ -250,7 +250,8 @@ class ParallelFindScanner:
                 optimal_workers = max(1, dir_count)
                 dirs_per_worker = dir_count / optimal_workers
                 
-            return optimal_workers
+            self.max_workers = optimal_workers
+            return directories
             
         except Exception as e:
             logger.error(f"Error splitting directories: {e}")
