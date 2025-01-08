@@ -52,19 +52,23 @@ The indexer can be configured to work with LucidLink filespaces:
 ```yaml
 lucidlink_filespace:
   enabled: true  # Enable LucidLink integration
-  skip_direct_links: false  # Set to true to skip generating direct links (faster indexing)
+  get_direct_links: true  # Set to false to skip generating direct links (faster indexing)
+  lucidlink_version: 3  # LucidLink API version (2 or 3)
+  port: 9778  # LucidLink API port
 ```
 
 #### Direct Links
 
-By default, the indexer generates direct links for all files. This allows for direct access to files but can slow down the indexing process. You can disable direct link generation by setting `skip_direct_links: true` in the config file.
+Direct link generation can be controlled in two ways:
+1. Set `get_direct_links: false` in the config to skip direct link generation for all modes
+2. Use `--mode index-only` to skip both direct link generation and Elasticsearch integration
 
 Benefits of skipping direct links:
 - Faster indexing performance
 - Reduced API load
 - Lower memory usage
 
-Note that when `skip_direct_links` is enabled, the `direct_link` field in the database will be set to `null` for all files.
+Note that when direct links are disabled, the `direct_link` field in the database will be set to `null` for all files.
 
 ## Usage
 
