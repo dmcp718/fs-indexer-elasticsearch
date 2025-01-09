@@ -2,10 +2,12 @@
 
 # LucidLink Filespace configuration
 lucidlink_filespace:
-  enabled: true  # Enable LucidLink integration
+  enabled: true
   lucidlink_version: 3  # LucidLink API version (2 or 3)
   port: 9778  # LucidLink API port
   calculate_directory_sizes: true  # Calculate directory sizes (requires additional processing)
+  name: ""  # Name of the filespace
+  mount_point: ""  # Mount point of the filespace
   
   # Version-specific settings
   v2_settings:
@@ -21,7 +23,7 @@ lucidlink_filespace:
     
   v3_settings:
     # Maximum concurrent API requests for direct links
-    max_concurrent_requests: 10  # API bound, but increased from 4 for better throughput
+    max_concurrent_requests: 100  # API bound, but increased from 4 for better throughput
     # Retry settings for API calls
     retry_attempts: 5
     retry_delay_seconds: 0.5
@@ -67,11 +69,9 @@ database:
   connection:
     url: "duckdb:///data/fs_index.duckdb"
     options:
-      memory_limit: "8GB"  # Optimized: Higher memory limit for better caching
-      threads: 10  # Match max_workers (CPU cores - 2)
-      temp_directory: "./.tmp"
-      checkpoint_on_shutdown: true
-      compression: "lz4"  # Best balance of speed/compression
+      threads: 10  # Number of threads for parallel processing
+      memory_limit: "32GB"  # Memory limit for database operations
+      temp_directory: "tmp"  # Temporary directory for database operations
       
   # Table-specific settings
   tables:
@@ -82,6 +82,9 @@ database:
       # Index settings
       create_indexes: true
       index_types: ["last_updated", "fsentry_id"]
+      
+  # File tracking settings
+  check_missing_files: true  # Whether to check for and remove entries for files that no longer exist
 
 # =============================================
 # Performance configuration
@@ -99,6 +102,11 @@ performance:
   parallel_processing:
     enabled: true
     max_workers: 10  # Maximum workers (CPU cores - 2), will adjust down based on directory count
+    use_top_level: true  # Use top-level directory based parallelization
+    top_level_settings:  # Settings for top-level parallelization
+      min_workers: 7  # Minimum number of workers
+      max_memory_per_worker: "2GB"  # Maximum memory per worker
+      size_threshold: "1TB"  # Maximum total size for using top-level parallelization
     batch_size: 100000  # Optimized: Larger batch size for better throughput
     
   # File scanning settings
@@ -176,5 +184,4 @@ logging:
     include_memory: true
     include_disk: true
 
-# Check and remove database records for files that no longer exist
-check_missing_files: false
+# =============================================

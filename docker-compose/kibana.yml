@@ -1,0 +1,12 @@
+# kibana.yml
+
+# Basic settings
+server.name: kibana
+server.host: "0.0.0.0"
+elasticsearch.hosts: [ "http://elasticsearch:9200" ]
+
+# Dark mode settings - using the correct format for Kibana 8.x
+uiSettings:
+  overrides:
+    "theme:darkMode": true
+    "theme:version": "v8"

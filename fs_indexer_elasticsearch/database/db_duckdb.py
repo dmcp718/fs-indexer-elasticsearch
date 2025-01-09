@@ -2,52 +2,152 @@
 
 import logging
 import os
-from typing import Dict, List, Tuple, Any
-
+from typing import Dict, Any, List, Tuple, Optional
 import duckdb
 import pyarrow as pa
 from datetime import datetime
 import pytz
+import json
 
 logger = logging.getLogger(__name__)
 
-# Configure optimal thread count for available memory
-thread_count = 10
-external_thread_count = max(1, thread_count // 2)
+# Global connection registry to track open connections
+_connections = {}
 
-def init_database(db_url: str) -> duckdb.DuckDBPyConnection:
+# Default configuration
+DEFAULT_CONFIG = {
+    'threads': 10,
+    'memory_limit': '32GB',
+    'temp_directory': 'tmp'
+}
+
+def get_db_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Get standardized database configuration.
+    
+    Args:
+        config: User configuration dictionary
+        
+    Returns:
+        Dict[str, Any]: Standardized database configuration
+    """
+    db_config = DEFAULT_CONFIG.copy()
+    
+    # Update with user config if provided
+    user_config = config.get('database', {}).get('connection', {}).get('options', {})
+    if user_config:
+        for key in ['threads', 'memory_limit', 'temp_directory']:
+            if key in user_config:
+                db_config[key] = user_config[key]
+    
+    logger.debug(f"Database config: {json.dumps(db_config, indent=2)}")
+    return db_config
+
+def _close_existing_connection(db_path: str) -> None:
+    """Close any existing connection to the database."""
+    if db_path in _connections:
+        try:
+            existing_conn = _connections[db_path]
+            try:
+                existing_conn.execute("CHECKPOINT")
+            except Exception as e:
+                if "Connection already closed" not in str(e):
+                    logger.warning(f"Error during checkpoint: {e}")
+            try:
+                existing_conn.close()
+            except Exception as e:
+                if "Connection already closed" not in str(e):
+                    logger.warning(f"Error closing connection: {e}")
+            del _connections[db_path]
+            logger.debug(f"Closed existing connection to {db_path}")
+        except Exception as e:
+            logger.warning(f"Error closing existing connection to {db_path}: {e}")
+
+def get_temp_dir(config: Dict[str, Any]) -> str:
+    """Get the temp directory path from config or use default.
+    
+    Args:
+        config: Configuration dictionary
+        
+    Returns:
+        str: Path to temp directory
+    """
+    # Get temp directory from config or use default
+    temp_dir = config.get('database', {}).get('connection', {}).get('options', {}).get('temp_directory', 'tmp')
+    
+    # Make it relative to database location if not absolute
+    if not os.path.isabs(temp_dir):
+        db_path = config.get('database', {}).get('connection', {}).get('url', '').replace('duckdb:///', '')
+        db_dir = os.path.dirname(db_path) if db_path else 'data'
+        temp_dir = os.path.join(db_dir, temp_dir)
+    
+    # Create directory if it doesn't exist
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    return temp_dir
+
+def cleanup_temp_dir(temp_dir: str) -> None:
+    """Clean up temporary files in the specified directory.
+    
+    Only removes files with .tmp extension to avoid accidental deletions.
+    """
+    if not os.path.exists(temp_dir):
+        return
+        
+    for filename in os.listdir(temp_dir):
+        if filename.endswith('.tmp'):
+            try:
+                os.remove(os.path.join(temp_dir, filename))
+            except OSError:
+                # Log but don't fail if cleanup fails
+                logger.warning(f"Failed to remove temp file: {filename}")
+
+def init_database(db_url: str, config: Dict[str, Any]) -> duckdb.DuckDBPyConnection:
     """Initialize the database connection and create tables if they don't exist."""
     # Extract the actual file path from the URL
     db_path = db_url.replace('duckdb:///', '')
     
-    # Create temp directory if it doesn't exist
-    os.makedirs("./.tmp", exist_ok=True)
+    # Log connection attempt
+    logger.debug(f"Initializing database connection to {db_path}")
+    logger.debug(f"Active connections: {list(_connections.keys())}")
     
-    # Connect with optimized settings
-    config = {
-        'threads': thread_count,
-        'memory_limit': '32GB',
-        'temp_directory': './.tmp'
-    }
+    # Close any existing connection first
+    _close_existing_connection(db_path)
+    
+    # Get standardized config
+    db_config = get_db_config(config)
+    
+    # Get and create temp directory
+    temp_dir = get_temp_dir(config)
+    db_config['temp_directory'] = temp_dir
+    
+    # Clean up any existing temp files before connecting
+    cleanup_temp_dir(temp_dir)
+    
+    # Log final configuration
+    logger.debug(f"Connecting with config: {json.dumps(db_config, indent=2)}")
     
     # Connect with configuration
-    conn = duckdb.connect(db_path, config=config)
+    conn = duckdb.connect(db_path, config=db_config)
+    _connections[db_path] = conn
     
-    # Set thread configuration
-    conn.execute(f"SET threads={thread_count}")
-    conn.execute(f"SET external_threads={external_thread_count}")
-    conn.execute("SET memory_limit='32GB'")
+    # Set additional configuration
+    conn.execute(f"SET threads={db_config['threads']}")
+    conn.execute(f"SET external_threads={max(1, int(db_config['threads']) // 2)}")
+    conn.execute(f"SET memory_limit='{db_config['memory_limit']}'")
+    conn.execute(f"SET temp_directory='{temp_dir}'")
     
     # Load Arrow extension for optimal performance with pyarrow
     conn.execute("INSTALL arrow;")
     conn.execute("LOAD arrow;")
+    
+    logger.debug(f"Successfully connected to {db_path}")
     
     # Check if we need to migrate the schema
     needs_migration = needs_schema_update(conn)
     
     if needs_migration:
         logger.info("Migrating database schema...")
-        reset_database(conn)
+        migrate_schema(conn)
     
     # Create a cursor for this operation
     cursor = conn.cursor()
@@ -91,8 +191,8 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
         cursor = conn.cursor()
         
         # Set thread configuration for this cursor
-        cursor.execute(f"SET threads={thread_count}")
-        cursor.execute(f"SET external_threads={external_thread_count}")
+        cursor.execute(f"SET threads={10}")
+        cursor.execute(f"SET external_threads={max(1, 10 // 2)}")
         cursor.execute("SET preserve_insertion_order=false")  # Allow parallel inserts
         
         # Pre-process data to avoid per-row operations
@@ -272,6 +372,19 @@ def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
         # Create a cursor for this operation
         cursor = conn.cursor()
         
+        # First check if the table exists
+        result = cursor.execute("""
+            SELECT EXISTS (
+                SELECT 1 
+                FROM information_schema.tables 
+                WHERE table_name = 'lucidlink_files'
+            );
+        """).fetchone()
+        
+        if not result or not result[0]:
+            logger.debug("Table does not exist, needs schema update")
+            return True
+            
         # Get column names and properties from lucidlink_files table
         result = cursor.execute("""
             SELECT column_name, is_nullable
@@ -292,6 +405,9 @@ def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
             (columns.get('size', 'NO') == 'NO')  # Check if size column is not nullable
         )
         
+        if needs_update:
+            logger.debug("Schema needs update: missing required columns or incorrect column types")
+            
         return needs_update
         
     except Exception as e:
@@ -302,40 +418,124 @@ def needs_schema_update(conn: duckdb.DuckDBPyConnection) -> bool:
         # Close the cursor
         cursor.close()
 
-def reset_database(conn: duckdb.DuckDBPyConnection) -> None:
-    """Drop and recreate all tables."""
+def migrate_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Migrate database schema while preserving data."""
     try:
         # Create a cursor for this operation
         cursor = conn.cursor()
         
-        # Drop existing tables
-        cursor.execute("DROP TABLE IF EXISTS lucidlink_files")
-        cursor.execute("DROP TABLE IF EXISTS temp_batch")
-        
-        # Recreate tables with new schema
+        # Check if old table exists
         cursor.execute("""
-            CREATE TABLE lucidlink_files (
-                id VARCHAR PRIMARY KEY,
-                fsentry_id VARCHAR,
-                name VARCHAR,
-                relative_path VARCHAR,
-                type VARCHAR,
-                size BIGINT,  -- Make size nullable for directories when calculation is disabled
-                creation_time TIMESTAMP WITH TIME ZONE,
-                update_time TIMESTAMP WITH TIME ZONE,
-                direct_link VARCHAR,
-                indexed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                error_count INTEGER DEFAULT 0,
-                last_error VARCHAR
+            SELECT EXISTS (
+                SELECT 1 
+                FROM information_schema.tables 
+                WHERE table_name = 'lucidlink_files'
             );
         """)
+        old_table_exists = cursor.fetchone()[0]
         
-        logger.info("Database tables reset successfully")
-        logger.info("Database reset completed successfully")
+        if old_table_exists:
+            # Create temporary table with new schema
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lucidlink_files_new (
+                    id VARCHAR PRIMARY KEY,
+                    fsentry_id VARCHAR,
+                    name VARCHAR,
+                    relative_path VARCHAR,
+                    type VARCHAR,
+                    size BIGINT,  -- Make size nullable for directories when calculation is disabled
+                    creation_time TIMESTAMP WITH TIME ZONE,
+                    update_time TIMESTAMP WITH TIME ZONE,
+                    direct_link VARCHAR,
+                    indexed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    error_count INTEGER DEFAULT 0,
+                    last_error VARCHAR
+                );
+            """)
+            
+            # Copy data from old table
+            cursor.execute("""
+                INSERT INTO lucidlink_files_new (
+                    id, fsentry_id, name, relative_path, type, size,
+                    creation_time, update_time, direct_link, indexed_at,
+                    error_count, last_error
+                )
+                SELECT 
+                    id, fsentry_id, name, relative_path, type, size,
+                    creation_time, update_time, direct_link, indexed_at,
+                    error_count, last_error
+                FROM lucidlink_files;
+            """)
+            
+            # Drop old table and rename new one
+            cursor.execute("DROP TABLE IF EXISTS lucidlink_files")
+            cursor.execute("ALTER TABLE lucidlink_files_new RENAME TO lucidlink_files")
+        else:
+            # First time setup - create table directly
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lucidlink_files (
+                    id VARCHAR PRIMARY KEY,
+                    fsentry_id VARCHAR,
+                    name VARCHAR,
+                    relative_path VARCHAR,
+                    type VARCHAR,
+                    size BIGINT,  -- Make size nullable for directories when calculation is disabled
+                    creation_time TIMESTAMP WITH TIME ZONE,
+                    update_time TIMESTAMP WITH TIME ZONE,
+                    direct_link VARCHAR,
+                    indexed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    error_count INTEGER DEFAULT 0,
+                    last_error VARCHAR
+                );
+            """)
+        
+        # Create indexes for common queries with performance hints
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_path ON lucidlink_files(relative_path) WITH (index_type='art');")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON lucidlink_files(type) WITH (index_type='art');")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_update ON lucidlink_files(update_time) WITH (index_type='art');")
+        
+        logger.info("Database schema migrated successfully")
         
     except Exception as e:
-        logger.error(f"Error resetting database: {str(e)}")
+        logger.error(f"Error migrating schema: {str(e)}")
         raise
     finally:
-        # Close the cursor
         cursor.close()
+
+def close_database(conn: duckdb.DuckDBPyConnection, config: Dict[str, Any]) -> None:
+    """Properly close database connection and clean up temp files."""
+    if conn:
+        try:
+            # Get database path from connection
+            db_path = None
+            for path, existing_conn in _connections.items():
+                if existing_conn == conn:
+                    db_path = path
+                    break
+            
+            # Ensure all changes are written
+            try:
+                conn.execute("CHECKPOINT")
+            except Exception as e:
+                if "Connection already closed" not in str(e):
+                    logger.warning(f"Error during checkpoint: {e}")
+            
+            # Close connection
+            try:
+                conn.close()
+            except Exception as e:
+                if "Connection already closed" not in str(e):
+                    logger.warning(f"Error closing connection: {e}")
+            
+            # Remove from registry
+            if db_path:
+                _connections.pop(db_path, None)
+            
+            # Clean up temp files
+            try:
+                temp_dir = get_temp_dir(config)
+                cleanup_temp_dir(temp_dir)
+            except Exception as e:
+                logger.warning(f"Error cleaning up temp files: {e}")
+        except Exception as e:
+            logger.error(f"Error closing database: {e}")

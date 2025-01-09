@@ -10,15 +10,18 @@ import pyarrow as pa
 import os
 import fnmatch
 from ..lucidlink.lucidlink_api import LucidLinkAPI
+from ..database.db_duckdb import init_database, close_database
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 class DirectLinkManager:
     """Manages direct links in a separate database."""
     
-    def __init__(self, config: Dict[str, Any], lucidlink_api: LucidLinkAPI):
-        """Initialize with configuration and LucidLink API client."""
+    def __init__(self, config: Dict[str, Any], db_path: str, lucidlink_api: LucidLinkAPI):
+        """Initialize with configuration, database path, and LucidLink API client."""
         self.config = config
+        self.db_path = db_path
         self.lucidlink_api = lucidlink_api
         self.version = config.get('lucidlink_filespace', {}).get('lucidlink_version', 3)
         
@@ -26,19 +29,18 @@ class DirectLinkManager:
         perf_settings = config.get('performance', {}).get('batch_sizes', {})
         self.batch_size = perf_settings.get('direct_links', 50000)
         
-        self.db_path = self._get_db_path()
         self.conn = None
         
-    def _get_db_path(self) -> str:
-        """Get the path to the DuckDB database file."""
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
-        os.makedirs(data_dir, exist_ok=True)
-        return os.path.join(data_dir, f'{self.config["lucidlink_filespace"]["name"]}_directlinks.duckdb')
-
     def setup_database(self):
         """Setup the DuckDB database and create necessary tables."""
         try:
-            self.conn = duckdb.connect(self.db_path)
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            
+            # Initialize database with parent config
+            self.conn = init_database(f'duckdb:///{self.db_path}', self.config)
+            
+            # Create tables
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS direct_links (
                     file_id VARCHAR PRIMARY KEY,
@@ -46,37 +48,18 @@ class DirectLinkManager:
                     link_type VARCHAR,  -- v2 or v3
                     fsentry_id VARCHAR NULL,  -- For v2 caching
                     last_updated TIMESTAMP
-                );
+                )
             """)
-            self.conn.commit()
         except Exception as e:
-            logger.error(f"Error setting up database: {e}")
-            self._reconnect_database()
+            logger.error(f"Error setting up direct links database: {e}")
+            raise
 
     def _reconnect_database(self):
         """Reconnect to the database after a fatal error."""
         try:
             if self.conn:
-                self.conn.close()
-            # Remove WAL file if it exists
-            wal_path = f"{self.db_path}.wal"
-            if os.path.exists(wal_path):
-                try:
-                    os.remove(wal_path)
-                except OSError as e:
-                    logger.warning(f"Could not remove WAL file: {e}")
-            # Reconnect
-            self.conn = duckdb.connect(self.db_path)
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS direct_links (
-                    file_id VARCHAR PRIMARY KEY,
-                    direct_link VARCHAR,
-                    link_type VARCHAR,  -- v2 or v3
-                    fsentry_id VARCHAR NULL,  -- For v2 caching
-                    last_updated TIMESTAMP
-                );
-            """)
-            self.conn.commit()
+                close_database(self.conn, self.config)
+            self.setup_database()
         except Exception as e:
             logger.error(f"Error reconnecting to database: {e}")
             raise
@@ -103,6 +86,11 @@ class DirectLinkManager:
                 batch = items[i:i + self.batch_size]
                 for item in batch:
                     try:
+                        # Validate required fields
+                        if not item.get('id') or not item.get('filepath'):
+                            logger.warning(f"Skipping direct link generation for item missing required fields: {item}")
+                            continue
+
                         # Skip if path matches skip patterns
                         if any(fnmatch.fnmatch(item.get('filepath', ''), pattern) for pattern in skip_patterns):
                             logger.debug(f"Skipping direct link generation for {item.get('filepath', '')} due to skip pattern")
@@ -168,7 +156,6 @@ class DirectLinkManager:
                             logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item.get('filepath', '')}")
                             continue
                         raise
-
             if results:
                 try:
                     # Convert to Arrow table for efficient bulk insert
