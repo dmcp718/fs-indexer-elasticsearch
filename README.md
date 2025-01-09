@@ -32,7 +32,6 @@ Configure the indexer using `indexer-config.yaml`. Key settings include:
 - Number of threads (default: 16)
 - Batch size for database operations (default: 100,000)
 - Read buffer size and mmap settings
-- LZ4 compression for better space efficiency
 
 ### API Settings
 - Maximum concurrent requests (default: 5)
@@ -106,7 +105,6 @@ The indexer uses several strategies to achieve high performance:
 
 3. **DuckDB Optimizations**
    - Memory-mapped I/O
-   - LZ4 compression
    - Parallel query execution
    - Optimized batch upserts
 
