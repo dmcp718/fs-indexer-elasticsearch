@@ -33,21 +33,44 @@ python -m fs_indexer_elasticsearch.main --help
 Configure the indexer using `indexer-config.yaml`. Key settings include:
 
 ### Performance Settings
-- DuckDB memory limit (default: 85% of system RAM)
+- DuckDB memory limit (default: 32GB)
 - Number of threads (default: 10)
-- Batch size for database operations (default: 100,000)
-- Read buffer size and mmap settings
+- Batch size for operations (default: 100,000)
+- Maximum workers for parallel processing (default: 10)
+- Memory per worker (default: 2GB)
 
 ### API Settings
-- Maximum concurrent requests (default: 5)
-- Cache TTL for directory contents (default: 60s)
-- Prefetch depth and batch size
-- Retry attempts and backoff delay
+- Maximum concurrent requests (default: 100)
+- Retry attempts (default: 5 for v3, 3 for v2)
+- Retry delay (default: 0.5s for v3, 1s for v2)
+- Request timeout (default: 300s)
+
+### Elasticsearch Settings
+- Bulk indexing size (default: 100,000)
+- Max retries (default: 3)
+- Timeout (default: 300s)
+- SSL support (default: false)
+
+### Parallel Processing
+- Top-level directory parallelization (default: enabled)
+- Minimum workers (default: 7)
+- Maximum memory per worker (default: 2GB)
+- Size threshold (default: 1TB)
 
 ### Skip Patterns
-- Directory patterns to skip
-- File patterns to skip
-- Extension-based filtering
+- Hidden files and directories (default: skipped)
+- Common patterns skipped:
+  - System files (.DS_Store, .Spotlight-*, etc.)
+  - Version control (.git)
+  - Python files (*.pyc, __pycache__, etc.)
+  - Build directories (dist, build, node_modules)
+  - Virtual environments (venv, .env)
+
+### Logging
+- Default level: INFO
+- File logging enabled (max 10MB with 5 backups)
+- Console logging with timestamps and colors
+- Performance metrics every 60 seconds
 
 ### LucidLink Configuration
 
