@@ -1,14 +1,16 @@
-from elasticsearch import Elasticsearch, helpers
+import os
 import logging
 from typing import List, Dict, Any, Tuple
 import urllib3
 from datetime import datetime
 from dateutil import tz
 from ..utils.size_formatter import format_size
-import os
 import duckdb
 import pyarrow as pa
+from elasticsearch import Elasticsearch, helpers
+
 from ..database.db_duckdb import init_database, close_database
+from fs_indexer_elasticsearch.scanner.direct_links import DirectLinkManager
 
 class ElasticsearchClient:
     def __init__(self, host: str, port: int, username: str, password: str, index_name: str, filespace: str, config: Dict[str, Any]):
@@ -312,26 +314,101 @@ class ElasticsearchClient:
         if not documents:
             return 0, 0
             
-        # Prepare documents
-        prepared_docs = self._prepare_documents(documents, direct_links_db)
-            
         # Create bulk request
         bulk_data = []
-        for doc in prepared_docs:
-            # Get document ID
-            doc_id = doc.get('id')
-            if not doc_id:
-                logging.warning(f"Document missing ID: {doc}")
-                continue
+        conn = None
+        try:
+            # Initialize database with parent config
+            conn = init_database(f'duckdb:///{direct_links_db}', self.config)
+            
+            # Convert documents to Arrow table
+            table = pa.Table.from_pylist(documents)
+            
+            # Register Arrow table
+            conn.register("documents_table", table)
+            
+            # First, calculate directory sizes by summing size_bytes of all files within each directory
+            dir_sizes_query = """
+                WITH RECURSIVE
+                file_paths AS (
+                    SELECT 
+                        filepath,
+                        size_bytes,
+                        type
+                    FROM documents_table
+                ),
+                directory_sizes AS (
+                    SELECT 
+                        d1.filepath as directory_path,
+                        SUM(CASE 
+                            WHEN f.type = 'file' THEN f.size_bytes 
+                            ELSE 0 
+                        END) as total_size
+                    FROM documents_table d1
+                    LEFT JOIN file_paths f 
+                    ON f.filepath LIKE d1.filepath || '/%' OR f.filepath = d1.filepath
+                    WHERE d1.type = 'directory'
+                    GROUP BY d1.filepath
+                )
+                SELECT * FROM directory_sizes
+            """
+            
+            # Execute directory sizes query
+            dir_sizes_table = conn.execute(dir_sizes_query).fetch_arrow_table()
+            conn.register("directory_sizes", dir_sizes_table)
+            
+            # Join with direct_links table and update directory sizes
+            query = """
+                SELECT 
+                    d.*,
+                    COALESCE(dl.direct_link, '') as direct_link,
+                    COALESCE(dl.link_type, '') as link_type,
+                    CASE 
+                        WHEN d.type = 'directory' THEN COALESCE(ds.total_size, 0)
+                        ELSE d.size_bytes 
+                    END as size_bytes
+                FROM documents_table d
+                LEFT JOIN direct_links dl ON d.id = dl.file_id
+                LEFT JOIN directory_sizes ds ON d.filepath = ds.directory_path
+            """
+            
+            # Execute query and fetch results as Arrow table
+            result_table = conn.execute(query).fetch_arrow_table()
+            
+            # Convert Arrow table to list of dictionaries
+            docs = result_table.to_pylist()
+            
+            # Format each document
+            for doc in docs:
+                # Get document ID
+                doc_id = doc.get('id')
+                if not doc_id:
+                    logging.warning(f"Document missing ID: {doc}")
+                    continue
+                    
+                # Format document
+                formatted_doc = self._format_document(doc.copy())
+                if 'size_bytes' in formatted_doc:
+                    formatted_doc['size'] = format_size(formatted_doc['size_bytes'])
                 
-            # Add index action
-            bulk_data.append({
-                "index": {
-                    "_index": self.index_name,
-                    "_id": doc_id
-                }
-            })
-            bulk_data.append(doc)
+                # Add index action
+                bulk_data.append({
+                    "index": {
+                        "_index": self.index_name,
+                        "_id": doc_id
+                    }
+                })
+                bulk_data.append(formatted_doc)
+            
+        except Exception as e:
+            logging.error(f"Error preparing documents: {e}")
+            return 0, len(documents)
+        finally:
+            if conn:
+                try:
+                    close_database(conn, self.config)
+                except Exception as e:
+                    logging.warning(f"Error closing database connection: {e}")
             
         if not bulk_data:
             return 0, 0

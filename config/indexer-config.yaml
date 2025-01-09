@@ -3,7 +3,7 @@
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true
-  get_direct_links: true  # Enable/disable direct link generation for both v2 and v3
+  get_direct_links: false  # Enable/disable direct link generation for both v2 and v3
   lucidlink_version: 2  # LucidLink API version (2 or 3)
   port: 8280  # LucidLink API port
   calculate_directory_sizes: true  # Calculate directory sizes (requires additional processing)
@@ -15,14 +15,14 @@ lucidlink_filespace:
     # Cache TTL in hours
     cache_ttl_hours: 1
     # Maximum concurrent API requests for ID lookup
-    max_concurrent_requests: 100
+    max_concurrent_requests: 300
     # Retry settings for API calls
     retry_attempts: 3
     retry_delay_seconds: 1
     
   v3_settings:
     # Maximum concurrent API requests for direct links
-    max_concurrent_requests: 100  # API bound, but increased from 4 for better throughput
+    max_concurrent_requests: 300  # API bound, but increased from 4 for better throughput
     # Retry settings for API calls
     retry_attempts: 5
     retry_delay_seconds: 0.5

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Generator, List, Optional
 import fnmatch
 from ..utils.size_formatter import format_size
+from ..database.db_duckdb import init_database, close_database
 
 logger = logging.getLogger(__name__)
 

@@ -539,3 +539,29 @@ def close_database(conn: duckdb.DuckDBPyConnection, config: Dict[str, Any]) -> N
                 logger.warning(f"Error cleaning up temp files: {e}")
         except Exception as e:
             logger.error(f"Error closing database: {e}")
+            # Ensure all changes are written
+            try:
+                conn.execute("CHECKPOINT")
+            except Exception as e:
+                if "Connection already closed" not in str(e):
+                    logger.warning(f"Error during checkpoint: {e}")
+            
+            # Close connection
+            try:
+                conn.close()
+            except Exception as e:
+                if "Connection already closed" not in str(e):
+                    logger.warning(f"Error closing connection: {e}")
+            
+            # Remove from registry
+            if db_path:
+                _connections.pop(db_path, None)
+            
+            # Clean up temp files
+            try:
+                temp_dir = get_temp_dir(config)
+                cleanup_temp_dir(temp_dir)
+            except Exception as e:
+                logger.warning(f"Error cleaning up temp files: {e}")
+        except Exception as e:
+            logger.error(f"Error closing database: {e}")

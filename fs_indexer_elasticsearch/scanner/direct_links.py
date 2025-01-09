@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 
+import os
 import logging
 import time
+import fnmatch
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
 import duckdb
 import pyarrow as pa
-import os
-import fnmatch
+import asyncio
+
 from ..lucidlink.lucidlink_api import LucidLinkAPI
 from ..database.db_duckdb import init_database, close_database
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class DirectLinkManager:
         perf_settings = config.get('performance', {}).get('batch_sizes', {})
         self.batch_size = perf_settings.get('direct_links', 50000)
         
+        # Single persistent connection
         self.conn = None
         
     def setup_database(self):
@@ -53,18 +55,41 @@ class DirectLinkManager:
         except Exception as e:
             logger.error(f"Error setting up direct links database: {e}")
             raise
-
+            
     def _reconnect_database(self):
         """Reconnect to the database after a fatal error."""
         try:
             if self.conn:
-                close_database(self.conn, self.config)
-            self.setup_database()
+                try:
+                    close_database(self.conn, self.config)
+                except:
+                    pass  # Ignore errors on close
+            self.conn = init_database(f'duckdb:///{self.db_path}', self.config)
+            # Recreate tables in case they were lost
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS direct_links (
+                    file_id VARCHAR PRIMARY KEY,
+                    direct_link VARCHAR,
+                    link_type VARCHAR,  -- v2 or v3
+                    fsentry_id VARCHAR NULL,  -- For v2 caching
+                    last_updated TIMESTAMP
+                )
+            """)
         except Exception as e:
             logger.error(f"Error reconnecting to database: {e}")
             raise
+            
+    async def cleanup(self):
+        """Clean up database connection when done."""
+        if self.conn:
+            try:
+                close_database(self.conn, self.config)
+                self.conn = None
+            except Exception as e:
+                logger.error(f"Error closing database connection: {e}")
+                raise
 
-    async def process_batch(self, items: List[Dict[str, Any]]) -> None:
+    async def process_batch(self, items: List[Dict[str, Any]]):
         """Process a batch of files and directories to get their direct links.
         
         The bulk insert flow:
@@ -75,19 +100,15 @@ class DirectLinkManager:
         if not items:
             return
             
-        # Check if direct links are enabled
-        if not self.config.get('lucidlink_filespace', {}).get('get_direct_links', True):
-            logger.info("Direct link generation is disabled, skipping batch")
-            return
-            
         logger.info(f"Processing direct links in batches of {len(items)}...")
+        
         try:
             results = []
             # Get skip patterns
             skip_patterns = self.config.get('skip_patterns', {}).get('patterns', [])
             
             # Process items in smaller sub-batches to avoid overwhelming the API
-            for i in range(0, len(items), self.batch_size):  # Use batch size from performance settings
+            for i in range(0, len(items), self.batch_size):
                 batch = items[i:i + self.batch_size]
                 for item in batch:
                     try:
@@ -95,107 +116,93 @@ class DirectLinkManager:
                         if not item.get('id') or not item.get('filepath'):
                             logger.warning(f"Skipping direct link generation for item missing required fields: {item}")
                             continue
-
+                            
                         # Skip if path matches skip patterns
                         if any(fnmatch.fnmatch(item.get('filepath', ''), pattern) for pattern in skip_patterns):
                             logger.debug(f"Skipping direct link generation for {item.get('filepath', '')} due to skip pattern")
                             continue
                             
-                        # Log item type for debugging
-                        logger.debug(f"Processing direct link for {item['type']}: {item.get('filepath', '')}")
-                        
-                        # Get direct link based on version
-                        if self.version == 3:
-                            # V3: Simple direct API call
-                            direct_link = await self.lucidlink_api.get_direct_link_v3(item.get('filepath', ''))
-                            if direct_link:
-                                logger.debug(f"Generated direct link for {item['type']}: {item.get('filepath', '')}")
-                                results.append({
-                                    'file_id': item['id'],
-                                    'direct_link': direct_link,
-                                    'link_type': 'v3',
-                                    'fsentry_id': None,  # Not used in v3
-                                    'last_updated': datetime.now()
-                                })
-                                # Update the item object for Elasticsearch
-                                item['direct_link'] = direct_link
-                            else:
-                                logger.warning(f"Failed to generate direct link for {item['type']}: {item.get('filepath', '')}")
-                        else:
-                            # V2: Try fast path first using cached fsentry_id
+                        # Generate direct link based on version
+                        if self.version == 2:
+                            # Check cache in direct_links table
                             fsentry_id = None
-                            if 'fsentry_id' in item:
-                                fsentry_id = item['fsentry_id']
-                            else:
-                                # Check cache in direct_links table
-                                cache_result = self.conn.execute("""
-                                    SELECT fsentry_id 
-                                    FROM direct_links 
-                                    WHERE file_id = ? 
-                                    AND last_updated > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
-                                """, [item['id']]).fetchone()
-                                if cache_result:
-                                    fsentry_id = cache_result[0]
-                            
-                            # Get direct link (will use fsentry_id if available)
-                            direct_link = await self.lucidlink_api.get_direct_link_v2(
-                                item.get('filepath', ''), 
+                            try:
+                                if 'fsentry_id' in item:
+                                    fsentry_id = item['fsentry_id']
+                                else:
+                                    cache_result = self.conn.execute("""
+                                        SELECT fsentry_id 
+                                        FROM direct_links 
+                                        WHERE file_id = ? 
+                                        AND last_updated > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
+                                    """, [item['id']]).fetchone()
+                                    if cache_result:
+                                        fsentry_id = cache_result[0]
+                            except duckdb.duckdb.ConnectionException:
+                                self._reconnect_database()
+                                continue  # Skip this item and retry in next batch
+                                    
+                            direct_link, fsentry_id = await self.lucidlink_api.get_direct_link_v2(
+                                item['filepath'],
                                 fsentry_id=fsentry_id
                             )
-                            if direct_link:
-                                logger.debug(f"Generated direct link for {item['type']}: {item.get('filepath', '')}")
-                                results.append({
-                                    'file_id': item['id'],
-                                    'direct_link': direct_link,
-                                    'link_type': 'v2',
-                                    'fsentry_id': fsentry_id,
-                                    'last_updated': datetime.now()
-                                })
-                                # Update the item object for Elasticsearch
-                                item['direct_link'] = direct_link
-                            else:
-                                logger.warning(f"Failed to generate direct link for {item['type']}: {item.get('filepath', '')}")
+                        else:
+                            direct_link = await self.lucidlink_api.get_direct_link_v3(item['filepath'])
+                            fsentry_id = None
+                            
+                        if direct_link:
+                            results.append({
+                                'file_id': item['id'],
+                                'direct_link': direct_link,
+                                'link_type': f'v{self.version}',
+                                'fsentry_id': fsentry_id,
+                                'last_updated': datetime.now()
+                            })
+                            item['direct_link'] = direct_link
+                        else:
+                            logger.warning(f"Failed to generate direct link for {item['type']}: {item.get('filepath', '')}")
+                            
                     except Exception as e:
                         logger.error(f"Error generating direct link for {item.get('filepath', '')}: {e}")
                         if "400" in str(e):  # Skip 400 errors as they're likely for unsupported files
                             logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item.get('filepath', '')}")
                             continue
                         raise
+                        
             if results:
-                try:
-                    # Convert to Arrow table for efficient bulk insert
-                    arrow_table = pa.Table.from_pylist(results)
-                    
-                    # Begin transaction
-                    self.conn.execute("BEGIN TRANSACTION")
-                    
+                max_retries = 3
+                retry_count = 0
+                while retry_count < max_retries:
                     try:
-                        self.conn.register('arrow_table', arrow_table)
-                        self.conn.execute("""
-                            INSERT OR REPLACE INTO direct_links 
-                            SELECT * FROM arrow_table
-                        """)
-                        self.conn.execute("COMMIT")
-                        logger.info(f"Generated {len(results)} direct links")
-                    except Exception as e:
-                        if "database has been invalidated" in str(e):
-                            logger.warning("Database invalidated, attempting reconnection...")
-                            self._reconnect_database()
-                            # Retry the insert after reconnection
+                        # Convert to Arrow table for efficient bulk insert
+                        arrow_table = pa.Table.from_pylist(results)
+                        
+                        # Begin transaction
+                        self.conn.execute("BEGIN TRANSACTION")
+                        
+                        try:
                             self.conn.register('arrow_table', arrow_table)
                             self.conn.execute("""
                                 INSERT OR REPLACE INTO direct_links 
                                 SELECT * FROM arrow_table
                             """)
                             self.conn.execute("COMMIT")
-                            logger.info(f"Generated {len(results)} direct links after reconnection")
-                        else:
+                            logger.info(f"Generated {len(results)} direct links")
+                            break  # Success, exit retry loop
+                        except Exception as e:
                             self.conn.execute("ROLLBACK")
-                            logger.error(f"Error updating direct links database: {e}")
                             raise
-                except Exception as e:
-                    logger.error(f"Error processing direct links batch: {e}")
-                    raise
+                            
+                    except duckdb.duckdb.ConnectionException:
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            raise
+                        logger.warning(f"Database connection lost, retrying ({retry_count}/{max_retries})...")
+                        self._reconnect_database()
+                    except Exception as e:
+                        logger.error(f"Error processing direct links batch: {e}")
+                        raise
+                        
         except Exception as e:
             logger.error(f"Error processing direct links batch: {e}")
             raise
@@ -267,42 +274,35 @@ class DirectLinkManager:
         finally:
             # Detach files database
             self.conn.execute("DETACH files")
-            
-    def combine_with_files(self, files_conn: duckdb.DuckDBPyConnection) -> pa.Table:
+
+    async def combine_with_files(self, files_conn: duckdb.DuckDBPyConnection) -> pa.Table:
         """Combine file and direct link data for export.
         
         Args:
-            files_conn: Connection to the files database
+            files_conn: Connection to files database
             
         Returns:
             Arrow table with combined data
         """
-        query = """
-            SELECT 
-                f.id,
-                f.name,
-                f.relative_path,
-                f.filepath,
-                f.size_bytes,
-                f.modified_time,
-                f.creation_time,
-                f.type,
-                f.extension,
-                f.checksum,
-                COALESCE(dl.direct_link, f.direct_link) as direct_link,
-                f.last_seen,
-                dl.link_type,
-                dl.last_updated as api_creation_time
-            FROM 
-                files f
-            LEFT JOIN 
-                direct_links dl ON f.id = dl.file_id
-            ORDER BY 
-                f.relative_path
-        """
-        return files_conn.execute(query).fetch_arrow_table()
+        try:
+            # Attach files database
+            files_conn.execute(f"ATTACH '{self.db_path}' AS direct_links")
+            
+            try:
+                # Join files and direct links
+                result = files_conn.execute("""
+                    SELECT f.*, dl.direct_link
+                    FROM files f
+                    LEFT JOIN direct_links.direct_links dl ON f.id = dl.file_id
+                """)
+                return result.fetch_arrow_table()
+            finally:
+                files_conn.execute("DETACH direct_links")
+        except Exception as e:
+            logger.error(f"Error combining files and direct links: {e}")
+            raise
 
-    def get_direct_link(self, file_id: str) -> str:
+    async def get_direct_link(self, file_id: str) -> str:
         """Get direct link for a file by its ID.
         
         Args:
