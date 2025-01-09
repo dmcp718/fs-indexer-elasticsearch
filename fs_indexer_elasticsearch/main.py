@@ -121,8 +121,10 @@ Examples:
             
             # Set direct_links database path
             if mode == 'elasticsearch':
-                direct_links_db = os.path.join('data', f'{filespace_name}_directlinks.duckdb')
-                logger.info(f"Using direct_links database: {direct_links_db}")
+                data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+                os.makedirs(data_dir, exist_ok=True)
+                direct_links_db = os.path.join(data_dir, f'{filespace_name}_directlinks.duckdb')
+                logger.info(f"Using direct_links database: {os.path.relpath(direct_links_db)}")
             
             # Log mount point and root path
             if mount_point:
@@ -176,15 +178,16 @@ Examples:
                 
                 lucidlink_api = LucidLinkAPI(
                     port=config['lucidlink_filespace'].get('port', 9778),
-                    mount_point=mount_point,  # Use already logged mount point
+                    mount_point=mount_point,
                     version=config['lucidlink_filespace'].get('lucidlink_version', 3),
                     filespace=config['lucidlink_filespace'].get('raw_name'),
-                    v3_settings=config['lucidlink_filespace']['v3_settings']
+                    v3_settings=config['lucidlink_filespace'].get('v3_settings'),
+                    max_workers=config['lucidlink_filespace'].get('max_concurrent_requests', 10)
                 )
 
                 # Initialize DirectLinkManager
                 if mode == 'elasticsearch':
-                    direct_link_manager = DirectLinkManager(config, lucidlink_api)
+                    direct_link_manager = DirectLinkManager(config, direct_links_db, lucidlink_api)
                     direct_link_manager.setup_database()
 
         # Initialize scanner
@@ -213,21 +216,29 @@ Examples:
                     username=es_config.get('username', ''),
                     password=es_config.get('password', ''),
                     index_name=index_name,
-                    filespace=config.get('lucidlink_filespace', {}).get('name', '')
+                    filespace=config.get('lucidlink_filespace', {}).get('name', ''),
+                    config=config
                 )
-                
-                # Create Kibana data views if needed
-                kibana_manager = KibanaDataViewManager(config)
-                kibana_manager.create_data_views()
             except Exception as e:
                 logger.error(f"Error connecting to Elasticsearch: {e}")
                 return 1
 
+        # Create Kibana data views
+        try:
+            kibana_manager = KibanaDataViewManager(config)
+            if not kibana_manager.setup_kibana_views():
+                logger.error("Failed to create Kibana data views")
+                return 1
+        except Exception as e:
+            logger.error(f"Failed to create Kibana data views: {e}")
+            return 1
+
         # Start scanning
         try:
             # Initialize tracking variables
-            check_missing_files = config.get('check_missing_files', True)
+            check_missing_files = config.get('database', {}).get('check_missing_files', True)
             current_files = set() if check_missing_files else None
+            logging.debug("Initialized file tracking")
             
             # Process files
             if lucidlink_api:
@@ -249,8 +260,8 @@ Examples:
                         )
                         
                         # Track current files if needed
-                        if current_files is not None:
-                            current_files.add(entry.get('relative_path'))
+                        if current_files is not None and entry.get('id'):
+                            current_files.add(entry.get('id'))
                         
                         # Skip direct links and ES in index-only mode
                         if mode != 'elasticsearch':
@@ -295,8 +306,8 @@ Examples:
                     )
                     
                     # Track current files if needed
-                    if current_files is not None:
-                        current_files.add(entry.get('relative_path'))
+                    if current_files is not None and entry.get('id'):
+                        current_files.add(entry.get('id'))
                     
                     # Skip ES in index-only mode
                     if mode != 'elasticsearch':
@@ -315,16 +326,30 @@ Examples:
                     if es_client and batch:
                         es_client.bulk_index(batch, direct_links_db)
             
-            # Clean up missing files if needed
-            if check_missing_files and current_files:
-                removed_count = scanner.cleanup_missing_files(current_files)
-                workflow_stats.add_removed_files(removed_count)
-                
-                if es_client:
-                    # Get removed file IDs and delete from Elasticsearch
-                    removed_ids = scanner.get_removed_file_ids()
-                    if removed_ids:
-                        es_client.delete_by_ids(removed_ids)
+            # Clean up missing files if enabled in config
+            if config.get('database', {}).get('check_missing_files', True):
+                try:
+                    if mode == 'elasticsearch' and es_client:
+                        # Use elasticsearch client for cleanup
+                        if current_files:
+                            logging.debug(f"Found {len(current_files)} files in current scan")
+                        es_client.cleanup_missing_files(direct_links_db)
+                        
+                        # Get removed file IDs
+                        removed_ids = es_client.get_removed_file_ids(direct_links_db)
+                        if removed_ids:
+                            logging.info(f"Found {len(removed_ids)} removed files")
+                            workflow_stats.add_removed_files(len(removed_ids))
+                    elif mode == 'index-only':
+                        # In index-only mode, just track the file count difference
+                        last_count = workflow_stats.get_last_file_count()
+                        if last_count is not None and last_count > workflow_stats.file_count:
+                            removed = last_count - workflow_stats.file_count
+                            logging.info(f"Found {removed} removed files")
+                            workflow_stats.add_removed_files(removed)
+                            
+                except Exception as e:
+                    logging.error(f"Error during cleanup: {e}")
             
             # Log final statistics
             workflow_stats.log_summary()

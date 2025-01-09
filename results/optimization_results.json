@@ -1,0 +1,489 @@
+{
+  "results": [
+    {
+      "test_name": "config_test_1",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.031004905700684,
+      "files_processed": 122,
+      "processing_rate": 2051.9,
+      "avg_metrics": {
+        "cpu_percent": 27.2,
+        "memory_percent": 62.46,
+        "disk_read_mb": 821306.6729492188,
+        "disk_write_mb": 1509828.10390625
+      },
+      "peak_metrics": {
+        "cpu_percent": 39.1,
+        "memory_percent": 62.8,
+        "disk_read_mb": 821308.5932617188,
+        "disk_write_mb": 1509895.6328125
+      }
+    },
+    {
+      "test_name": "config_test_2",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 25000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.04352617263794,
+      "files_processed": 122,
+      "processing_rate": 2287.5,
+      "avg_metrics": {
+        "cpu_percent": 30.96,
+        "memory_percent": 62.86,
+        "disk_read_mb": 821515.2143554688,
+        "disk_write_mb": 1510463.05390625
+      },
+      "peak_metrics": {
+        "cpu_percent": 43.4,
+        "memory_percent": 63.1,
+        "disk_read_mb": 821527.0073242188,
+        "disk_write_mb": 1510540.87890625
+      }
+    },
+    {
+      "test_name": "config_test_3",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 100000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.0394549369812,
+      "files_processed": 122,
+      "processing_rate": 2075.8,
+      "avg_metrics": {
+        "cpu_percent": 28.060000000000002,
+        "memory_percent": 62.620000000000005,
+        "disk_read_mb": 821652.6002929688,
+        "disk_write_mb": 1511585.5421875
+      },
+      "peak_metrics": {
+        "cpu_percent": 41.5,
+        "memory_percent": 62.9,
+        "disk_read_mb": 821664.2416992188,
+        "disk_write_mb": 1511700.01953125
+      }
+    },
+    {
+      "test_name": "config_test_4",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 8,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.03093671798706,
+      "files_processed": 122,
+      "processing_rate": 2272.7,
+      "avg_metrics": {
+        "cpu_percent": 28.02,
+        "memory_percent": 63.04,
+        "disk_read_mb": 821807.6456054688,
+        "disk_write_mb": 1512659.31953125
+      },
+      "peak_metrics": {
+        "cpu_percent": 39.5,
+        "memory_percent": 63.3,
+        "disk_read_mb": 821825.3901367188,
+        "disk_write_mb": 1512748.07421875
+      }
+    },
+    {
+      "test_name": "config_test_5",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 16,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.04340696334839,
+      "files_processed": 122,
+      "processing_rate": 2073.6,
+      "avg_metrics": {
+        "cpu_percent": 31.940000000000005,
+        "memory_percent": 62.660000000000004,
+        "disk_read_mb": 821944.6612304688,
+        "disk_write_mb": 1513559.51640625
+      },
+      "peak_metrics": {
+        "cpu_percent": 44.2,
+        "memory_percent": 63.1,
+        "disk_read_mb": 821992.9916992188,
+        "disk_write_mb": 1513766.234375
+      }
+    },
+    {
+      "test_name": "config_test_6",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 50000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.034871101379395,
+      "files_processed": 122,
+      "processing_rate": 2050.4,
+      "avg_metrics": {
+        "cpu_percent": 30.139999999999997,
+        "memory_percent": 62.94,
+        "disk_read_mb": 822490.0870117188,
+        "disk_write_mb": 1514631.765625
+      },
+      "peak_metrics": {
+        "cpu_percent": 42.4,
+        "memory_percent": 63.1,
+        "disk_read_mb": 822537.4799804688,
+        "disk_write_mb": 1514779.02734375
+      }
+    },
+    {
+      "test_name": "config_test_7",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "4GB"
+      },
+      "duration_secs": 31.045873880386353,
+      "files_processed": 122,
+      "processing_rate": 2241.7,
+      "avg_metrics": {
+        "cpu_percent": 32.239999999999995,
+        "memory_percent": 63.220000000000006,
+        "disk_read_mb": 822654.8823242188,
+        "disk_write_mb": 1515676.60703125
+      },
+      "peak_metrics": {
+        "cpu_percent": 43.8,
+        "memory_percent": 63.3,
+        "disk_read_mb": 822705.7104492188,
+        "disk_write_mb": 1515807.578125
+      }
+    },
+    {
+      "test_name": "config_test_8",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 25000,
+        "performance.parallel_processing.max_workers": 8,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.046624898910522,
+      "files_processed": 122,
+      "processing_rate": 2114.4,
+      "avg_metrics": {
+        "cpu_percent": 29.76,
+        "memory_percent": 63.379999999999995,
+        "disk_read_mb": 823141.0815429688,
+        "disk_write_mb": 1517057.23359375
+      },
+      "peak_metrics": {
+        "cpu_percent": 50.5,
+        "memory_percent": 63.8,
+        "disk_read_mb": 823172.0776367188,
+        "disk_write_mb": 1517180.50390625
+      }
+    },
+    {
+      "test_name": "config_test_9",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 25000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.039550065994263,
+      "files_processed": 122,
+      "processing_rate": 2135.8,
+      "avg_metrics": {
+        "cpu_percent": 30.68,
+        "memory_percent": 63.0,
+        "disk_read_mb": 823239.8370117188,
+        "disk_write_mb": 1518141.9625
+      },
+      "peak_metrics": {
+        "cpu_percent": 39.1,
+        "memory_percent": 63.3,
+        "disk_read_mb": 823256.8666992188,
+        "disk_write_mb": 1518310.65625
+      }
+    },
+    {
+      "test_name": "config_test_10",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 25000,
+        "performance.parallel_processing.max_workers": 16,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.032904863357544,
+      "files_processed": 122,
+      "processing_rate": 2219.8,
+      "avg_metrics": {
+        "cpu_percent": 25.44,
+        "memory_percent": 62.1,
+        "disk_read_mb": 823343.4237304687,
+        "disk_write_mb": 1519060.14453125
+      },
+      "peak_metrics": {
+        "cpu_percent": 42.7,
+        "memory_percent": 63.2,
+        "disk_read_mb": 823356.5737304688,
+        "disk_write_mb": 1519128.2578125
+      }
+    },
+    {
+      "test_name": "config_test_11",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 8,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.04049515724182,
+      "files_processed": 122,
+      "processing_rate": 2142.9,
+      "avg_metrics": {
+        "cpu_percent": 30.76,
+        "memory_percent": 61.17999999999999,
+        "disk_read_mb": 823375.7315429688,
+        "disk_write_mb": 1519867.84375
+      },
+      "peak_metrics": {
+        "cpu_percent": 38.5,
+        "memory_percent": 61.5,
+        "disk_read_mb": 823380.0581054688,
+        "disk_write_mb": 1519951.08984375
+      }
+    },
+    {
+      "test_name": "config_test_12",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.030534029006958,
+      "files_processed": 122,
+      "processing_rate": 2199.8,
+      "avg_metrics": {
+        "cpu_percent": 30.52,
+        "memory_percent": 62.260000000000005,
+        "disk_read_mb": 823432.2081054688,
+        "disk_write_mb": 1520744.14609375
+      },
+      "peak_metrics": {
+        "cpu_percent": 40.3,
+        "memory_percent": 62.6,
+        "disk_read_mb": 823436.3315429688,
+        "disk_write_mb": 1520819.2890625
+      }
+    },
+    {
+      "test_name": "config_test_13",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 16,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.047309637069702,
+      "files_processed": 122,
+      "processing_rate": 2075.2,
+      "avg_metrics": {
+        "cpu_percent": 29.5,
+        "memory_percent": 62.14,
+        "disk_read_mb": 823451.1190429687,
+        "disk_write_mb": 1521442.18828125
+      },
+      "peak_metrics": {
+        "cpu_percent": 39.4,
+        "memory_percent": 62.5,
+        "disk_read_mb": 823455.5307617188,
+        "disk_write_mb": 1521502.8359375
+      }
+    },
+    {
+      "test_name": "config_test_14",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 100000,
+        "performance.parallel_processing.max_workers": 8,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.076343059539795,
+      "files_processed": 122,
+      "processing_rate": 2382.2,
+      "avg_metrics": {
+        "cpu_percent": 32.62,
+        "memory_percent": 62.86,
+        "disk_read_mb": 824223.1932617187,
+        "disk_write_mb": 1522891.65
+      },
+      "peak_metrics": {
+        "cpu_percent": 46.9,
+        "memory_percent": 63.1,
+        "disk_read_mb": 824444.4331054688,
+        "disk_write_mb": 1523020.43359375
+      }
+    },
+    {
+      "test_name": "config_test_15",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 100000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.088896989822388,
+      "files_processed": 122,
+      "processing_rate": 2069.3,
+      "avg_metrics": {
+        "cpu_percent": 30.660000000000004,
+        "memory_percent": 62.739999999999995,
+        "disk_read_mb": 825446.3049804687,
+        "disk_write_mb": 1523706.22890625
+      },
+      "peak_metrics": {
+        "cpu_percent": 48.7,
+        "memory_percent": 63.1,
+        "disk_read_mb": 825718.9838867188,
+        "disk_write_mb": 1523802.52734375
+      }
+    },
+    {
+      "test_name": "config_test_16",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 100000,
+        "performance.parallel_processing.max_workers": 16,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.091147899627686,
+      "files_processed": 122,
+      "processing_rate": 2361.7,
+      "avg_metrics": {
+        "cpu_percent": 32.0,
+        "memory_percent": 62.660000000000004,
+        "disk_read_mb": 826470.8127929687,
+        "disk_write_mb": 1524471.0015625
+      },
+      "peak_metrics": {
+        "cpu_percent": 45.5,
+        "memory_percent": 63.0,
+        "disk_read_mb": 826700.1987304688,
+        "disk_write_mb": 1524525.53125
+      }
+    },
+    {
+      "test_name": "config_test_17",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 50000,
+        "database.connection.options.memory_limit": "4GB"
+      },
+      "duration_secs": 31.065414905548096,
+      "files_processed": 122,
+      "processing_rate": 2103.2,
+      "avg_metrics": {
+        "cpu_percent": 36.92,
+        "memory_percent": 62.86,
+        "disk_read_mb": 827525.7073242187,
+        "disk_write_mb": 1525100.0234375
+      },
+      "peak_metrics": {
+        "cpu_percent": 49.9,
+        "memory_percent": 62.9,
+        "disk_read_mb": 827774.7963867188,
+        "disk_write_mb": 1525157.2890625
+      }
+    },
+    {
+      "test_name": "config_test_18",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 50000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.06679606437683,
+      "files_processed": 122,
+      "processing_rate": 2285.1,
+      "avg_metrics": {
+        "cpu_percent": 42.7,
+        "memory_percent": 62.82000000000001,
+        "disk_read_mb": 828170.3463867188,
+        "disk_write_mb": 1525948.4796875
+      },
+      "peak_metrics": {
+        "cpu_percent": 48.6,
+        "memory_percent": 62.9,
+        "disk_read_mb": 828552.4057617188,
+        "disk_write_mb": 1526229.46484375
+      }
+    },
+    {
+      "test_name": "config_test_19",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "4GB"
+      },
+      "duration_secs": 169.00746273994446,
+      "files_processed": 122,
+      "processing_rate": 621.9,
+      "avg_metrics": {
+        "cpu_percent": 39.92,
+        "memory_percent": 62.14,
+        "disk_read_mb": 832507.3018554688,
+        "disk_write_mb": 1529991.0953125
+      },
+      "peak_metrics": {
+        "cpu_percent": 54.9,
+        "memory_percent": 62.3,
+        "disk_read_mb": 832663.8354492188,
+        "disk_write_mb": 1530173.04296875
+      }
+    },
+    {
+      "test_name": "config_test_20",
+      "config_overrides": {
+        "performance.batch_sizes.elasticsearch": 50000,
+        "performance.parallel_processing.max_workers": 12,
+        "performance.parallel_processing.batch_size": 100000,
+        "database.connection.options.memory_limit": "8GB"
+      },
+      "duration_secs": 31.04734182357788,
+      "files_processed": 122,
+      "processing_rate": 2337.5,
+      "avg_metrics": {
+        "cpu_percent": 28.98,
+        "memory_percent": 63.14,
+        "disk_read_mb": 833073.1815429687,
+        "disk_write_mb": 1531214.8734375
+      },
+      "peak_metrics": {
+        "cpu_percent": 43.1,
+        "memory_percent": 63.5,
+        "disk_read_mb": 833132.9760742188,
+        "disk_write_mb": 1531261.77734375
+      }
+    }
+  ],
+  "system_info": {
+    "cpu_count": 12,
+    "memory_gb": 48.0,
+    "disk_type": "HDD"
+  }
+}

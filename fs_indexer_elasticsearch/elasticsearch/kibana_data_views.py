@@ -247,45 +247,44 @@ class KibanaDataViewManager:
         endpoint = f"/api/saved_objects/_import"
         
         try:
-            # Convert objects to NDJSON format
-            ndjson_content = '\n'.join(json.dumps(obj) for obj in objects)
-            
-            files = {
-                'file': ('export.ndjson', ndjson_content, 'application/ndjson')
-            }
-            
-            # Remove Content-Type from headers
-            headers = {"kbn-xsrf": "true"}
-            
-            # Log the exact data being sent
-            logger.debug("=== Request Details ===")
-            logger.debug(f"URL: {self.kibana_url}{endpoint}")
-            logger.debug("Headers:")
-            logger.debug(json.dumps(headers, indent=2))
-            logger.debug("Objects:")
-            logger.debug(json.dumps(objects, indent=2))
-            
-            response = requests.post(
-                url=f"{self.kibana_url}{endpoint}",
-                headers=headers,
-                auth=self.auth,
-                files=files,
-                params={"overwrite": "true"}
-            )
-            
-            logger.debug("=== Response Details ===")
-            logger.debug(f"Status Code: {response.status_code}")
-            logger.debug(f"Response Headers: {dict(response.headers)}")
-            logger.debug(f"Response Body: {response.text}")
-            
-            response_data = response.json()
-            if response_data.get("success", False):
-                return True
-            else:
-                logger.error(f"Import failed: {response_data}")
+            # Convert objects to NDJSON format and write to temp file
+            import tempfile
+            temp = tempfile.NamedTemporaryFile(delete=False, suffix='.ndjson')
+            try:
+                # Write each object as a line of NDJSON
+                for obj in objects:
+                    temp.write(json.dumps(obj).encode('utf-8'))
+                    temp.write(b'\n')
+                temp.close()
+                
+                # Open file in binary mode for upload
+                files = {
+                    'file': ('export.ndjson', open(temp.name, 'rb'), 'application/ndjson')
+                }
+                
+                # Make request
+                response = requests.post(
+                    url=f"{self.kibana_url}{endpoint}",
+                    headers={"kbn-xsrf": "true"},
+                    auth=self.auth,
+                    files=files,
+                    params={"overwrite": "true"}
+                )
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if response_data.get("success", False):
+                        logger.info("Successfully imported objects to Kibana")
+                        return True
+                
+                logger.error(f"Import failed: {response.text}")
                 return False
                 
-        except requests.exceptions.RequestException as err:
+            finally:
+                # Clean up temp file
+                os.unlink(temp.name)
+                
+        except Exception as err:
             logger.error(f"Kibana API request failed: {err}")
             return False
 
@@ -312,11 +311,11 @@ class KibanaDataViewManager:
             
             # Send objects to Kibana
             return self._send_objects_to_kibana(objects_to_import)
-        
+            
         except Exception as e:
             logger.error(f"Failed to create data views: {e}")
             return False
-
+            
     def setup_kibana_views(self) -> bool:
         """Create both data view and saved layout if they don't exist."""
         try:

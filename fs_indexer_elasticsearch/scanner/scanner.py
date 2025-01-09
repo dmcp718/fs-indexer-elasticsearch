@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
+import os
 import logging
+from typing import Dict, Any, List, Optional, Generator
+import duckdb
+from ..database.db_duckdb import init_database, close_database
 import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Dict, Any, Optional, Generator, List
-import duckdb
 import pyarrow as pa
 import hashlib
-import os
 import fnmatch
 
 logger = logging.getLogger(__name__)
@@ -46,49 +47,22 @@ class FileScanner:
         """Get database path based on filespace name."""
         if self.config.get('lucidlink_filespace', {}).get('enabled', False):
             filespace = self.config.get('lucidlink_filespace', {}).get('name', 'default')
-            return f"data/{filespace}_directlinks.duckdb"
+            return f"data/{filespace}_index.duckdb"
         return "data/fs_index.duckdb"
         
     def _init_db(self):
         """Setup DuckDB database with optimizations."""
-        # Connect to database
-        self.conn = duckdb.connect(self._get_db_path())
-        
-        # Handle database setup based on mode
-        check_missing_files = self.config.get('check_missing_files', True)
-        if not check_missing_files:
-            # Drop and recreate mode - close connection and delete file
-            self.conn.close()
-            try:
-                os.remove(self._get_db_path())
-            except FileNotFoundError:
-                pass
-            self.conn = duckdb.connect(self._get_db_path())
-            
-        # Create table if not exists
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS files (
-                id VARCHAR,
-                name VARCHAR,
-                relative_path VARCHAR PRIMARY KEY,  -- Keep for internal use
-                filepath VARCHAR,  -- Clean path for external use
-                size_bytes BIGINT,
-                modified_time TIMESTAMP,
-                creation_time TIMESTAMP,
-                type VARCHAR,
-                extension VARCHAR,
-                checksum VARCHAR,
-                direct_link VARCHAR,
-                last_seen TIMESTAMP
-            )
-        """)
-        
-        # Enable optimizations
-        self.conn.execute("SET enable_progress_bar=false")
-        self.conn.execute("SET temp_directory='data'")
-        self.conn.execute("SET memory_limit='4GB'")
-        self.conn.execute("PRAGMA threads=8")
-        
+        if not self.config.get('database', {}).get('enabled', True):
+            return
+
+        db_path = self._get_db_path()
+        self.conn = init_database(db_path, self.config)
+
+    def __del__(self):
+        """Ensure proper cleanup on object destruction."""
+        if hasattr(self, 'conn') and self.conn:
+            close_database(self.conn, self.config)
+
     def setup_database(self):
         """Setup database if not already initialized."""
         if not self.conn and self.config.get('database', {}).get('enabled', True):
