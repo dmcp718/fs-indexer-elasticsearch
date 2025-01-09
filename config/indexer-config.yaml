@@ -16,7 +16,7 @@ lucidlink_filespace:
     # Cache TTL in hours
     cache_ttl_hours: 1
     # Maximum concurrent API requests for ID lookup
-    max_concurrent_requests: 20
+    max_concurrent_requests: 100
     # Retry settings for API calls
     retry_attempts: 3
     retry_delay_seconds: 1
