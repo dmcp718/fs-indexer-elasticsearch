@@ -31,6 +31,8 @@ Prompt_notes.txt
 # Data
 data/
 *.db
+*.duckdb
+test_direct_links.duckdb
 
 # Environment
 .env
@@ -44,6 +46,10 @@ ENV/
 .vscode/
 *.swp
 *.swo
+
+# Project specific
+OPTIMIZATION_TASKS.md
+commit_message.txt
 
 # OS
 .DS_Store
