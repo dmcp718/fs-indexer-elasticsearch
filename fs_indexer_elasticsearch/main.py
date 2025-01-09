@@ -176,13 +176,14 @@ Examples:
                 logger.info(f"LucidLink config: {config_log}")
                 logger.info("Initializing LucidLink API...")
                 
+                ll_config = config['lucidlink_filespace']
                 lucidlink_api = LucidLinkAPI(
-                    port=config['lucidlink_filespace'].get('port', 9778),
-                    mount_point=mount_point,
-                    version=config['lucidlink_filespace'].get('lucidlink_version', 3),
-                    filespace=config['lucidlink_filespace'].get('raw_name'),
-                    v3_settings=config['lucidlink_filespace'].get('v3_settings'),
-                    max_workers=config['lucidlink_filespace'].get('max_concurrent_requests', 10)
+                    port=ll_config['port'],
+                    mount_point=ll_config['mount_point'],
+                    version=ll_config['lucidlink_version'],
+                    filespace=ll_config['raw_name'],
+                    v3_settings=ll_config.get('v3_settings'),
+                    get_direct_links=ll_config.get('get_direct_links', True)
                 )
 
                 # Initialize DirectLinkManager

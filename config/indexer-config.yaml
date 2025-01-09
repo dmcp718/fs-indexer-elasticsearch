@@ -3,11 +3,10 @@
 # LucidLink Filespace configuration
 lucidlink_filespace:
   enabled: true
-  lucidlink_version: 3  # LucidLink API version (2 or 3)
-  port: 9778  # LucidLink API port
+  get_direct_links: true  # Enable/disable direct link generation for both v2 and v3
+  lucidlink_version: 2  # LucidLink API version (2 or 3)
+  port: 8280  # LucidLink API port
   calculate_directory_sizes: true  # Calculate directory sizes (requires additional processing)
-  name: ""  # Name of the filespace
-  mount_point: ""  # Mount point of the filespace
   
   # Version-specific settings
   v2_settings:

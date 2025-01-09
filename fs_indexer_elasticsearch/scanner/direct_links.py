@@ -74,7 +74,12 @@ class DirectLinkManager:
         """
         if not items:
             return
-
+            
+        # Check if direct links are enabled
+        if not self.config.get('lucidlink_filespace', {}).get('get_direct_links', True):
+            logger.info("Direct link generation is disabled, skipping batch")
+            return
+            
         logger.info(f"Processing direct links in batches of {len(items)}...")
         try:
             results = []

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class LucidLinkAPI:
     """Handler for LucidLink Filespace API interactions"""
     
-    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None, v3_settings: Dict[str, Any] = None):
+    def __init__(self, port: int, mount_point: str, max_workers: int = 10, version: int = 1, filespace: str = None, v3_settings: Dict[str, Any] = None, get_direct_links: bool = True):
         """Initialize the API handler with the filespace port and mount point"""
         self.base_url = f"http://127.0.0.1:{port}/files"
         self.mount_point = mount_point
@@ -22,6 +22,7 @@ class LucidLinkAPI:
         self._request_semaphore = None
         self.session = None
         self._max_workers = max_workers
+        self.get_direct_links = get_direct_links
         
         # Use v3 settings if provided
         if v3_settings:
@@ -309,7 +310,11 @@ class LucidLinkAPI:
             
     async def get_direct_link(self, file_path: str) -> Optional[str]:
         """Get direct link for a file based on the configured version"""
-        if self.version <= 2:
+        if not self.get_direct_links:
+            logger.debug(f"Direct link generation disabled, returning None for: {file_path}")
+            return None
+            
+        if self.version == 2:
             return await self.get_direct_link_v2(file_path)
         else:
             return await self.get_direct_link_v3(file_path)
