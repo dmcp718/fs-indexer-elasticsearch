@@ -34,7 +34,7 @@ Configure the indexer using `indexer-config.yaml`. Key settings include:
 
 ### Performance Settings
 - DuckDB memory limit (default: 85% of system RAM)
-- Number of threads (default: 16)
+- Number of threads (default: 10)
 - Batch size for database operations (default: 100,000)
 - Read buffer size and mmap settings
 
