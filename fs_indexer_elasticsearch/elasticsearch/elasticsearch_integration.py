@@ -128,14 +128,49 @@ class ElasticsearchClient:
             # Register Arrow table
             conn.register("documents_table", table)
             
-            # Join with direct_links table
+            # First, calculate directory sizes by summing size_bytes of all files within each directory
+            dir_sizes_query = """
+                WITH RECURSIVE
+                file_paths AS (
+                    SELECT 
+                        filepath,
+                        size_bytes,
+                        type
+                    FROM documents_table
+                ),
+                directory_sizes AS (
+                    SELECT 
+                        d1.filepath as directory_path,
+                        SUM(CASE 
+                            WHEN f.type = 'file' THEN f.size_bytes 
+                            ELSE 0 
+                        END) as total_size
+                    FROM documents_table d1
+                    LEFT JOIN file_paths f 
+                    ON f.filepath LIKE d1.filepath || '/%' OR f.filepath = d1.filepath
+                    WHERE d1.type = 'directory'
+                    GROUP BY d1.filepath
+                )
+                SELECT * FROM directory_sizes
+            """
+            
+            # Execute directory sizes query
+            dir_sizes_table = conn.execute(dir_sizes_query).fetch_arrow_table()
+            conn.register("directory_sizes", dir_sizes_table)
+            
+            # Join with direct_links table and update directory sizes
             query = """
                 SELECT 
                     d.*,
                     COALESCE(dl.direct_link, '') as direct_link,
-                    COALESCE(dl.link_type, '') as link_type
+                    COALESCE(dl.link_type, '') as link_type,
+                    CASE 
+                        WHEN d.type = 'directory' THEN COALESCE(ds.total_size, 0)
+                        ELSE d.size_bytes 
+                    END as size_bytes
                 FROM documents_table d
                 LEFT JOIN direct_links dl ON d.id = dl.file_id
+                LEFT JOIN directory_sizes ds ON d.filepath = ds.directory_path
             """
             
             # Execute query and fetch results as Arrow table
@@ -304,8 +339,7 @@ class ElasticsearchClient:
         try:
             # Send bulk request
             response = self.client.bulk(
-                index=self.index_name,
-                body=bulk_data,
+                operations=bulk_data,
                 refresh=True
             )
             
