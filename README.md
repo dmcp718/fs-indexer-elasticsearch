@@ -153,6 +153,34 @@ You can set the mode in two ways:
    ./fs-indexer-es --mode index-only
    ```
 
+## Running with Docker Compose
+
+For development and testing, you can use Docker Compose to run Elasticsearch and Kibana:
+
+```bash
+# Start Elasticsearch and Kibana
+docker compose -f docker-compose/docker-compose.yml up -d
+
+# Wait for services to be ready (usually takes about 30 seconds)
+# You can check the status at:
+# - Elasticsearch: http://localhost:9200
+# - Kibana: http://localhost:5601
+
+# Run the indexer with Elasticsearch integration
+python -m fs_indexer_elasticsearch.main --root-path /path/to/index --mode elasticsearch
+```
+
+The Docker Compose setup includes:
+- Elasticsearch with proper settings for development
+- Kibana with pre-configured data views
+- Automatic index pattern creation
+- Health checks for both services
+
+To stop the services:
+```bash
+docker compose -f docker-compose/docker-compose.yml down
+```
+
 ## Building Standalone Executables
 
 To create a self-contained executable for your platform:
@@ -178,5 +206,3 @@ To run the standalone version:
 ```bash
 cd dist/fs-indexer-es-{platform}
 ./run-indexer.sh
-
-```
