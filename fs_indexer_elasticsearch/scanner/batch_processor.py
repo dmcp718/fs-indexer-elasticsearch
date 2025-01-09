@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Generator, List, Optional
 import fnmatch
+from ..utils.size_formatter import format_size
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class BatchProcessor:
                 'relative_path': relative_path,  # Full path relative to mount point
                 'filepath': filepath,  # Clean path for external use
                 'size_bytes': size,
+                'size': format_size(size),  # Add human-readable size
                 'modified_time': timestamp,
                 'creation_time': timestamp,  # Use modified time as creation time if not available
                 'type': entry_type,

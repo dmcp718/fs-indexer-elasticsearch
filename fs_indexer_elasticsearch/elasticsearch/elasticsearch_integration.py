@@ -93,7 +93,8 @@ class ElasticsearchClient:
                     "checksum": {"type": "keyword"},
                     "direct_link": {"type": "keyword"},
                     "fsentry_id": {"type": "keyword"},  # LucidLink fsEntry ID
-                    "last_seen": {"type": "date"}
+                    "last_seen": {"type": "date"},
+                    "relative_path": {"type": "keyword"}
                 }
             }
         }
@@ -112,13 +113,6 @@ class ElasticsearchClient:
         if 'last_seen' in doc:
             doc['last_seen'] = doc['last_seen'].isoformat() if doc['last_seen'] else None
             
-        # Format size for display
-        if 'size_bytes' in doc:
-            doc['size'] = format_size(doc['size_bytes'])
-            
-        # Remove internal fields
-        doc.pop('relative_path', None)
-        
         return doc
 
     def _prepare_documents_with_join(self, documents: List[Dict[str, Any]], direct_links_db: str) -> List[Dict[str, Any]]:
@@ -150,11 +144,19 @@ class ElasticsearchClient:
             # Convert Arrow table to list of dictionaries
             docs = result_table.to_pylist()
             
-            # Debug logging
-            if docs:
-                logging.debug(f"Join results sample: {docs[0]}")
+            # Format each document
+            formatted_docs = []
+            for doc in docs:
+                formatted_doc = self._format_document(doc.copy())
+                if 'size_bytes' in formatted_doc:
+                    formatted_doc['size'] = format_size(formatted_doc['size_bytes'])
+                formatted_docs.append(formatted_doc)
             
-            return docs
+            # Debug logging
+            if formatted_docs:
+                logging.debug(f"Join results sample: {formatted_docs[0]}")
+            
+            return formatted_docs
             
         except Exception as e:
             logging.error(f"Error joining with direct_links database: {e}")
@@ -169,28 +171,21 @@ class ElasticsearchClient:
 
     def _prepare_documents_without_join(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Prepare documents without joining with direct_links database."""
-        documents = []
+        formatted_docs = []
         for entry in entries:
-            # Create a copy of the entry to avoid modifying the original
-            doc = entry.copy()
-            
-            # Remove internal fields
-            doc.pop('relative_path', None)
-            
-            # Format size for display
+            # Format document and add size
+            doc = self._format_document(entry.copy())
             if 'size_bytes' in doc:
                 doc['size'] = format_size(doc['size_bytes'])
-            
-            documents.append(doc)
-            
-        return documents
+            formatted_docs.append(doc)
+        return formatted_docs
 
     def _prepare_documents(self, entries: List[Dict[str, Any]], direct_links_db: str = None) -> List[Dict[str, Any]]:
         """Prepare documents for Elasticsearch indexing.
         
         Args:
             entries: List of file entries from scanner
-            direct_links_db: Path to direct_links database (optional)
+            direct_links_db: Path to direct links database (optional)
         """
         if direct_links_db and os.path.exists(direct_links_db):
             return self._prepare_documents_with_join(entries, direct_links_db)
@@ -282,9 +277,12 @@ class ElasticsearchClient:
         if not documents:
             return 0, 0
             
+        # Prepare documents
+        prepared_docs = self._prepare_documents(documents, direct_links_db)
+            
         # Create bulk request
         bulk_data = []
-        for doc in documents:
+        for doc in prepared_docs:
             # Get document ID
             doc_id = doc.get('id')
             if not doc_id:
