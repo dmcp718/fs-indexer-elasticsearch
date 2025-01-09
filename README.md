@@ -70,17 +70,32 @@ Note that in `index-only` mode, the `direct_link` field in the database will be 
 
 ## Usage
 
-### Basic Usage
+The indexer provides a simple command-line interface:
 
 ```bash
-# Show help
-python -m fs_indexer_elasticsearch.main --help
+usage: fs-indexer [-h] [--config CONFIG] [--root-path PATH] [--version VER] [--mode MODE]
 
-# Index a directory
-python -m fs_indexer_elasticsearch.main --root-path /path/to/index
+options:
+  -h, --help        show this help message and exit
+  --config CONFIG   Path to configuration file (default: config/indexer-config.yaml)
 
-# Use a custom config file
-python -m fs_indexer_elasticsearch.main --config /path/to/config.yaml --root-path /path/to/index
+indexing options:
+  --root-path PATH  Root path to start indexing from. If not provided, will use path from config
+  --version VER     LucidLink version to use (2 or 3). Overrides config setting
+  --mode MODE       Operating mode: elasticsearch (default) or index-only
+```
+
+### Examples
+
+```bash
+# Index files using config file settings
+fs-indexer --config config/indexer-config.yaml
+
+# Index specific directory with LucidLink v2
+fs-indexer --root-path /Volumes/filespace/path --version 2
+
+# Index files without Elasticsearch (index-only mode)
+fs-indexer --root-path /path/to/index --mode index-only
 ```
 
 The indexer will display progress and performance metrics during operation, including:
@@ -88,41 +103,6 @@ The indexer will display progress and performance metrics during operation, incl
 - Total size of indexed files
 - Number of files updated/skipped/removed
 - Any errors encountered
-
-## Performance Optimizations
-
-The indexer uses several strategies to achieve high performance:
-
-1. **Async I/O Operations**
-   - Async/await for API calls
-   - Connection pooling and rate limiting
-   - Retry logic with exponential backoff
-
-2. **Smart Caching**
-   - Directory content caching with TTL
-   - Intelligent prefetching of child directories
-   - Memory-efficient batch processing
-
-3. **DuckDB Optimizations**
-   - Memory-mapped I/O
-   - Parallel query execution
-   - Optimized batch upserts
-
-4. **Resource Management**
-   - Platform-optimized multiprocessing (fork on Linux, spawn on macOS)
-   - Dynamic batch sizing based on directory depth
-   - Controlled prefetching to prevent API overload
-   - Efficient memory usage with generators
-   - Automatic worker count adjustment based on system resources
-   - Robust error handling and process recovery
-
-### Command Line Arguments
-
-- `--root-path PATH`: Specify the root directory to index
-- `--config PATH`: Optional path to custom config file
-- `--mode MODE`: Operation mode (choices: 'elasticsearch', 'index-only')
-  - `elasticsearch`: Run indexer and send records to Elasticsearch (default)
-  - `index-only`: Run indexer only, do not send records to Elasticsearch
 
 ### Operation Modes
 
@@ -178,6 +158,33 @@ To stop the services:
 ```bash
 docker compose -f docker-compose/docker-compose.yml down
 ```
+
+## Performance Optimizations
+
+The indexer uses several strategies to achieve high performance:
+
+1. **Async I/O Operations**
+   - Async/await for API calls
+   - Connection pooling and rate limiting
+   - Retry logic with exponential backoff
+
+2. **Smart Caching**
+   - Directory content caching with TTL
+   - Intelligent prefetching of child directories
+   - Memory-efficient batch processing
+
+3. **DuckDB Optimizations**
+   - Memory-mapped I/O
+   - Parallel query execution
+   - Optimized batch upserts
+
+4. **Resource Management**
+   - Platform-optimized multiprocessing (fork on Linux, spawn on macOS)
+   - Dynamic batch sizing based on directory depth
+   - Controlled prefetching to prevent API overload
+   - Efficient memory usage with generators
+   - Automatic worker count adjustment based on system resources
+   - Robust error handling and process recovery
 
 ## Building Standalone Executables
 
