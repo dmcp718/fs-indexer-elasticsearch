@@ -18,9 +18,14 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-2. Install the package:
+2. Install dependencies:
 ```bash
-pip install -e .
+pip install -r requirements.txt
+```
+
+3. Verify installation:
+```bash
+python -m fs_indexer_elasticsearch.main --help
 ```
 
 ## Configuration
