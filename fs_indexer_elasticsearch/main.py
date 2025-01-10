@@ -2,21 +2,17 @@
 
 import sys
 import logging
-import time
 import signal
 import argparse
 import asyncio
-import subprocess
-from typing import Dict, Any, Optional, Tuple
 import os
+import subprocess
 
 from .config.config import load_config
 from .config.logging import configure_logging
 from .elasticsearch.elasticsearch_integration import ElasticsearchClient
 from .elasticsearch.kibana_data_views import KibanaDataViewManager
-from .scanner import FileScanner
-from .scanner.direct_links import DirectLinkManager
-from .lucidlink.directory_size import DirectorySizeCalculator
+from .scanner import FileScanner, DirectLinkManager
 from .lucidlink.lucidlink_api import LucidLinkAPI
 from .lucidlink.filespace_prompt import get_filespace_info
 from .utils.workflow_stats import WorkflowStats

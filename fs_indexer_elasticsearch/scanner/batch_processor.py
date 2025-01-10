@@ -5,8 +5,9 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Generator, List, Optional
-import fnmatch
+from typing import Dict, Any, List, Optional, Generator
+from concurrent.futures import ThreadPoolExecutor
+from ..lucidlink.lucidlink_api import LucidLinkAPI
 from ..utils.size_formatter import format_size
 
 logger = logging.getLogger(__name__)

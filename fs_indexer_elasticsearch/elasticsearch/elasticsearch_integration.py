@@ -1,12 +1,8 @@
 from elasticsearch import Elasticsearch, helpers
 import logging
 from typing import List, Dict, Any, Tuple
-import urllib3
-from datetime import datetime
-from dateutil import tz
 from ..utils.size_formatter import format_size
 import os
-import duckdb
 import pyarrow as pa
 from ..database.db_duckdb import init_database, close_database
 

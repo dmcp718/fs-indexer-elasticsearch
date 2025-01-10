@@ -3,11 +3,11 @@
 import logging
 import asyncio
 import aiohttp
-from datetime import datetime, timezone
-from typing import Dict, List, Generator, Any, Optional
+from datetime import datetime
+from typing import Dict, List, Any, Optional
+import fnmatch
 from urllib.parse import quote
 import time
-import fnmatch
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class LucidLinkAPI:
     def _convert_timestamp(self, ns_timestamp: int) -> datetime:
         """Convert nanosecond epoch timestamp to datetime object"""
         seconds = ns_timestamp / 1e9
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        return datetime.fromtimestamp(seconds, tz=datetime.timezone.utc)
         
     def _is_cache_valid(self, cache_entry):
         """Check if a cache entry is still valid"""
@@ -427,6 +427,7 @@ class LucidLinkAPI:
             rel_path = self._get_relative_path(path)
             logger.debug(f"Converting path '{path}' to relative path '{rel_path}'")
             encoded_path = quote(rel_path)
+            
             url = f"{self.base_url}/list/{encoded_path}"
             
             async with self._request_semaphore:

@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 
-import os
 import logging
 import time
-import fnmatch
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, Any, List
 import duckdb
 import pyarrow as pa
-import asyncio
-
+import os
+import fnmatch
 from ..lucidlink.lucidlink_api import LucidLinkAPI
 from ..database.db_duckdb import init_database, close_database
 
@@ -53,30 +50,17 @@ class DirectLinkManager:
                 )
             """)
         except Exception as e:
-            logger.error(f"Error setting up direct links database: {e}")
+            logger.error(f"Error setting up direct links database: {str(e)}")
             raise
             
     def _reconnect_database(self):
         """Reconnect to the database after a fatal error."""
         try:
             if self.conn:
-                try:
-                    close_database(self.conn, self.config)
-                except:
-                    pass  # Ignore errors on close
-            self.conn = init_database(f'duckdb:///{self.db_path}', self.config)
-            # Recreate tables in case they were lost
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS direct_links (
-                    file_id VARCHAR PRIMARY KEY,
-                    direct_link VARCHAR,
-                    link_type VARCHAR,  -- v2 or v3
-                    fsentry_id VARCHAR NULL,  -- For v2 caching
-                    last_updated TIMESTAMP
-                )
-            """)
-        except Exception as e:
-            logger.error(f"Error reconnecting to database: {e}")
+                close_database(self.conn, self.config)
+            self.setup_database()
+        except Exception as err:
+            logger.error(f"Error reconnecting to database: {str(err)}")
             raise
             
     async def cleanup(self):
@@ -86,7 +70,7 @@ class DirectLinkManager:
                 close_database(self.conn, self.config)
                 self.conn = None
             except Exception as e:
-                logger.error(f"Error closing database connection: {e}")
+                logger.error(f"Error closing database connection: {str(e)}")
                 raise
 
     async def process_batch(self, items: List[Dict[str, Any]]):
@@ -162,9 +146,9 @@ class DirectLinkManager:
                         else:
                             logger.warning(f"Failed to generate direct link for {item['type']}: {item.get('filepath', '')}")
                             
-                    except Exception as e:
-                        logger.error(f"Error generating direct link for {item.get('filepath', '')}: {e}")
-                        if "400" in str(e):  # Skip 400 errors as they're likely for unsupported files
+                    except Exception as err:
+                        logger.error(f"Error generating direct link for {item.get('filepath', '')}: {str(err)}")
+                        if "400" in str(err):  # Skip 400 errors as they're likely for unsupported files
                             logger.warning(f"Failed to generate direct link for {'directory' if item.get('is_dir', False) else 'file'}: {item.get('filepath', '')}")
                             continue
                         raise
@@ -189,7 +173,7 @@ class DirectLinkManager:
                             self.conn.execute("COMMIT")
                             logger.info(f"Generated {len(results)} direct links")
                             break  # Success, exit retry loop
-                        except Exception as e:
+                        except Exception:
                             self.conn.execute("ROLLBACK")
                             raise
                             
@@ -199,12 +183,12 @@ class DirectLinkManager:
                             raise
                         logger.warning(f"Database connection lost, retrying ({retry_count}/{max_retries})...")
                         self._reconnect_database()
-                    except Exception as e:
-                        logger.error(f"Error processing direct links batch: {e}")
+                    except Exception as err:
+                        logger.error(f"Error processing direct links batch: {str(err)}")
                         raise
                         
-        except Exception as e:
-            logger.error(f"Error processing direct links batch: {e}")
+        except Exception as err:
+            logger.error(f"Error processing direct links batch: {str(err)}")
             raise
 
     async def update_direct_links(self, files_db_path: str):
@@ -298,8 +282,8 @@ class DirectLinkManager:
                 return result.fetch_arrow_table()
             finally:
                 files_conn.execute("DETACH direct_links")
-        except Exception as e:
-            logger.error(f"Error combining files and direct links: {e}")
+        except Exception as err:
+            logger.error(f"Error combining files and direct links: {str(err)}")
             raise
 
     async def get_direct_link(self, file_id: str) -> str:
@@ -319,6 +303,6 @@ class DirectLinkManager:
             """, [file_id]).fetchone()
             
             return result[0] if result else ''
-        except Exception as e:
-            logger.error(f"Error getting direct link for file {file_id}: {e}")
+        except Exception as err:
+            logger.error(f"Error getting direct link for file {file_id}: {str(err)}")
             return ''

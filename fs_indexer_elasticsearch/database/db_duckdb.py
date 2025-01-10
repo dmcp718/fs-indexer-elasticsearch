@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple
 import duckdb
 import pyarrow as pa
 from datetime import datetime
@@ -244,7 +244,7 @@ def bulk_upsert_files(conn: duckdb.DuckDBPyConnection, files_batch: List[Dict[st
                 SELECT * FROM batch_table
             """)
             cursor.execute("COMMIT")
-        except Exception as e:
+        except Exception:
             cursor.execute("ROLLBACK")
             raise
         
@@ -523,9 +523,9 @@ def close_database(conn: duckdb.DuckDBPyConnection, config: Dict[str, Any]) -> N
             # Close connection
             try:
                 conn.close()
-            except Exception as e:
-                if "Connection already closed" not in str(e):
-                    logger.warning(f"Error closing connection: {e}")
+            except Exception:
+                logger.error("Error closing database connection")
+                # Don't raise, just log the error
             
             # Remove from registry
             if db_path:
@@ -549,9 +549,9 @@ def close_database(conn: duckdb.DuckDBPyConnection, config: Dict[str, Any]) -> N
             # Close connection
             try:
                 conn.close()
-            except Exception as e:
-                if "Connection already closed" not in str(e):
-                    logger.warning(f"Error closing connection: {e}")
+            except Exception:
+                logger.error("Error closing database connection")
+                # Don't raise, just log the error
             
             # Remove from registry
             if db_path:
