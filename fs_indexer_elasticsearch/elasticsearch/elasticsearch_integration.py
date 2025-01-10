@@ -1,16 +1,14 @@
-import os
+from elasticsearch import Elasticsearch, helpers
 import logging
 from typing import List, Dict, Any, Tuple
 import urllib3
 from datetime import datetime
 from dateutil import tz
 from ..utils.size_formatter import format_size
+import os
 import duckdb
 import pyarrow as pa
-from elasticsearch import Elasticsearch, helpers
-
 from ..database.db_duckdb import init_database, close_database
-from fs_indexer_elasticsearch.scanner.direct_links import DirectLinkManager
 
 class ElasticsearchClient:
     def __init__(self, host: str, port: int, username: str, password: str, index_name: str, filespace: str, config: Dict[str, Any]):
@@ -357,20 +355,34 @@ class ElasticsearchClient:
             dir_sizes_table = conn.execute(dir_sizes_query).fetch_arrow_table()
             conn.register("directory_sizes", dir_sizes_table)
             
-            # Join with direct_links table and update directory sizes
-            query = """
-                SELECT 
-                    d.*,
-                    COALESCE(dl.direct_link, '') as direct_link,
-                    COALESCE(dl.link_type, '') as link_type,
-                    CASE 
-                        WHEN d.type = 'directory' THEN COALESCE(ds.total_size, 0)
-                        ELSE d.size_bytes 
-                    END as size_bytes
-                FROM documents_table d
-                LEFT JOIN direct_links dl ON d.id = dl.file_id
-                LEFT JOIN directory_sizes ds ON d.filepath = ds.directory_path
-            """
+            # Build query based on whether direct links are enabled
+            if direct_links_db is not None:
+                # Join with direct_links table and update directory sizes
+                query = """
+                    SELECT 
+                        d.*,
+                        COALESCE(dl.direct_link, '') as direct_link,
+                        COALESCE(dl.link_type, '') as link_type,
+                        CASE 
+                            WHEN d.type = 'directory' THEN COALESCE(ds.total_size, 0)
+                            ELSE d.size_bytes 
+                        END as size_bytes
+                    FROM documents_table d
+                    LEFT JOIN direct_links dl ON d.id = dl.file_id
+                    LEFT JOIN directory_sizes ds ON d.filepath = ds.directory_path
+                """
+            else:
+                # Skip direct_links join when disabled
+                query = """
+                    SELECT 
+                        d.*,
+                        CASE 
+                            WHEN d.type = 'directory' THEN COALESCE(ds.total_size, 0)
+                            ELSE d.size_bytes 
+                        END as size_bytes
+                    FROM documents_table d
+                    LEFT JOIN directory_sizes ds ON d.filepath = ds.directory_path
+                """
             
             # Execute query and fetch results as Arrow table
             result_table = conn.execute(query).fetch_arrow_table()
@@ -450,6 +462,13 @@ class ElasticsearchClient:
         2. Gets the list of file IDs and paths from Elasticsearch
         3. Removes files that exist in Elasticsearch but not in current scan
         """
+        # Skip cleanup when direct_links_db is not provided
+        # This is fine because:
+        # 1. When direct links are disabled, we don't need to clean up old direct links
+        # 2. The next full scan will naturally overwrite any stale data
+        if not direct_links_db:
+            return
+
         conn = None
         total_deleted = 0
         try:
@@ -472,7 +491,7 @@ class ElasticsearchClient:
                 logging.debug("No files in current scan")
                 return
                 
-            # Convert to list of current IDs
+            # Get current IDs
             current_ids = set(doc['file_id'] for doc in current_files)
             logging.debug(f"Found {len(current_ids)} files in current scan")
             
@@ -561,6 +580,10 @@ class ElasticsearchClient:
         Returns:
             List of file IDs that should be removed from Elasticsearch
         """
+        # Skip cleanup when direct_links_db is not provided
+        if not direct_links_db:
+            return []
+
         conn = None
         try:
             # Initialize database connection
@@ -573,8 +596,7 @@ class ElasticsearchClient:
                     direct_link,
                     link_type
                 FROM direct_links 
-                WHERE file_id IS NOT NULL 
-                ORDER BY file_id
+                WHERE file_id IS NOT NULL
             """
             result = conn.execute(query).fetch_arrow_table()
             current_files = result.to_pylist()

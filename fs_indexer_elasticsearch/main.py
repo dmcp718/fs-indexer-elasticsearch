@@ -121,7 +121,8 @@ Examples:
             port = config['lucidlink_filespace']['port']
             
             # Set direct_links database path
-            if mode == 'elasticsearch':
+            direct_links_db = None
+            if mode == 'elasticsearch' and config.get('lucidlink_filespace', {}).get('get_direct_links', True):
                 data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
                 os.makedirs(data_dir, exist_ok=True)
                 direct_links_db = os.path.join(data_dir, f'{filespace_name}_directlinks.duckdb')
@@ -153,191 +154,155 @@ Examples:
 
             # Initialize LucidLink API if in elasticsearch mode
             if mode == 'elasticsearch' and config.get('lucidlink_filespace', {}).get('enabled', False):
-                try:
-                    # Get v3 settings
-                    v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
-                    if not v3_settings:
-                        config['lucidlink_filespace']['v3_settings'] = {
-                            'max_concurrent_requests': 4,
-                            'retry_attempts': 5,
-                            'retry_delay_seconds': 0.5
-                        }
-                    
-                    # Get performance settings
-                    perf_settings = config.get('performance', {})
-                    batch_sizes = perf_settings.get('batch_sizes', {})
-                    
-                    # Add performance settings to v3_settings for compatibility
-                    v3_settings['batch_size'] = batch_sizes.get('direct_links', 100000)  # Default to 100K
-                    v3_settings['queue_size'] = v3_settings.get('batch_size', 100000)  # Match batch size
-                    
-                    # Log config without mount point and root path
-                    config_log = config.get('lucidlink_filespace', {}).copy()
-                    config_log.pop('mount_point', None)
-                    config_log.pop('root_path', None)
-                    logger.info(f"LucidLink config: {config_log}")
-                    logger.info("Initializing LucidLink API...")
-                    
-                    ll_config = config['lucidlink_filespace']
-                    lucidlink_api = LucidLinkAPI(
-                        port=ll_config['port'],
-                        mount_point=ll_config['mount_point'],
-                        version=ll_config['lucidlink_version'],
-                        filespace=ll_config['raw_name'],
-                        v3_settings=ll_config.get('v3_settings'),
-                        max_workers=ll_config.get('max_concurrent_requests', 10)
-                    )
+                # Get v3 settings
+                v3_settings = config.get('lucidlink_filespace', {}).get('v3_settings', {})
+                if not v3_settings:
+                    config['lucidlink_filespace']['v3_settings'] = {
+                        'max_concurrent_requests': 4,
+                        'retry_attempts': 5,
+                        'retry_delay_seconds': 0.5
+                    }
+                
+                # Get performance settings
+                perf_settings = config.get('performance', {})
+                batch_sizes = perf_settings.get('batch_sizes', {})
+                
+                # Add performance settings to v3_settings for compatibility
+                v3_settings['batch_size'] = batch_sizes.get('direct_links', 100000)  # Default to 100K
+                v3_settings['queue_size'] = v3_settings.get('batch_size', 100000)  # Match batch size
+                
+                # Log config without mount point and root path
+                config_log = config.get('lucidlink_filespace', {}).copy()
+                config_log.pop('mount_point', None)
+                config_log.pop('root_path', None)
+                logger.info(f"LucidLink config: {config_log}")
+                logger.info("Initializing LucidLink API...")
+                
+                ll_config = config['lucidlink_filespace']
+                lucidlink_api = LucidLinkAPI(
+                    port=ll_config['port'],
+                    mount_point=ll_config['mount_point'],
+                    version=ll_config['lucidlink_version'],
+                    filespace=ll_config['raw_name'],
+                    v3_settings=ll_config.get('v3_settings'),
+                    max_workers=ll_config.get('max_concurrent_requests', 10),
+                    get_direct_links=ll_config.get('get_direct_links', True)
+                )
 
-                    # Initialize API session
+                # Initialize DirectLinkManager only if direct links are enabled
+                direct_link_manager = None
+                if mode == 'elasticsearch' and ll_config.get('get_direct_links', True):
+                    direct_link_manager = DirectLinkManager(config, direct_links_db, lucidlink_api)
+                    direct_link_manager.setup_database()
+
+        # Initialize scanner
+        scanner = FileScanner(config)
+        scanner.setup_database()
+
+        # Initialize Elasticsearch if needed
+        if mode == 'elasticsearch':
+            try:
+                # Get filespace name for index
+                filespace_name = None
+                if config.get('lucidlink_filespace', {}).get('enabled'):
+                    filespace_name = config['lucidlink_filespace'].get('name')  # Use the name field which is already formatted
+                
+                # Use filespace name for index if available
+                root_name = filespace_name if filespace_name else ''
+                
+                # Create index name
+                es_config = config.get('elasticsearch', {})
+                index_name = f"{es_config.get('index_name', 'filespace')}-{root_name}" if root_name else es_config.get('index_name', 'filespace')
+                
+                # Initialize Elasticsearch client
+                es_client = ElasticsearchClient(
+                    host=es_config.get('host', 'localhost'),
+                    port=es_config.get('port', 9200),
+                    username=es_config.get('username', ''),
+                    password=es_config.get('password', ''),
+                    index_name=index_name,
+                    filespace=config.get('lucidlink_filespace', {}).get('name', ''),
+                    config=config
+                )
+            except Exception as e:
+                logger.error(f"Error connecting to Elasticsearch: {e}")
+                return 1
+
+        # Create Kibana data views
+        try:
+            kibana_manager = KibanaDataViewManager(config)
+            if not kibana_manager.setup_kibana_views():
+                logger.error("Failed to create Kibana data views")
+                return 1
+        except Exception as e:
+            logger.error(f"Failed to create Kibana data views: {e}")
+            return 1
+
+        # Start scanning
+        try:
+            # Initialize tracking variables
+            check_missing_files = config.get('database', {}).get('check_missing_files', True)
+            current_files = set() if check_missing_files else None
+            logging.debug("Initialized file tracking")
+            
+            # Process files with or without LucidLink
+            if config.get('lucidlink_filespace', {}).get('enabled', False):
+                try:
+                    # Process files with LucidLink
+                    direct_link_batch = []
+                    batch = []
+                    logger.info("Scanning root path...")
+                    
+                    # Use LucidLinkAPI within async context manager
                     async with lucidlink_api:
-                        # Initialize DirectLinkManager
-                        direct_link_manager = DirectLinkManager(config, direct_links_db, lucidlink_api)
-                        direct_link_manager.setup_database()
-
-                        # Initialize scanner
-                        scanner = FileScanner(config)
-                        scanner.setup_database()
-
-                        # Initialize Elasticsearch if needed
-                        if mode == 'elasticsearch':
-                            try:
-                                # Get filespace name for index
-                                filespace_name = None
-                                if config.get('lucidlink_filespace', {}).get('enabled'):
-                                    filespace_name = config['lucidlink_filespace'].get('name')  # Use the name field which is already formatted
-                                
-                                # Use filespace name for index if available
-                                root_name = filespace_name if filespace_name else ''
-                                
-                                # Create index name
-                                es_config = config.get('elasticsearch', {})
-                                index_name = f"{es_config.get('index_name', 'filespace')}-{root_name}" if root_name else es_config.get('index_name', 'filespace')
-                                
-                                # Initialize Elasticsearch client
-                                es_client = ElasticsearchClient(
-                                    host=es_config.get('host', 'localhost'),
-                                    port=es_config.get('port', 9200),
-                                    username=es_config.get('username', ''),
-                                    password=es_config.get('password', ''),
-                                    index_name=index_name,
-                                    filespace=config.get('lucidlink_filespace', {}).get('name', ''),
-                                    config=config
-                                )
-                            except Exception as e:
-                                logger.error(f"Error connecting to Elasticsearch: {e}")
-                                return 1
-
-                            # Create Kibana data views
-                            try:
-                                kibana_manager = KibanaDataViewManager(config)
-                                if not kibana_manager.setup_kibana_views():
-                                    logger.error("Failed to create Kibana data views")
-                                    return 1
-                            except Exception as e:
-                                logger.error(f"Failed to create Kibana data views: {e}")
-                                return 1
-
-                            # Start scanning
-                            try:
-                                # Initialize tracking variables
-                                check_missing_files = config.get('database', {}).get('check_missing_files', True)
-                                current_files = set() if check_missing_files else None
-                                logging.debug("Initialized file tracking")
-                                
-                                # Process files with LucidLink
-                                direct_link_batch = []
-                                batch = []
-                                logger.info("Scanning root path...")
-                                for entry in scanner.scan(root_path=root_path):
-                                    # Update statistics based on entry type
-                                    is_file = entry.get('type') == 'file'
-                                    is_dir = entry.get('type') == 'directory'
-                                    workflow_stats.update_stats(
-                                        file_count=1 if is_file else 0,
-                                        dirs=1 if is_dir else 0,
-                                        updated=1,
-                                        size=entry.get('size_bytes', 0)
-                                    )
-                                    
-                                    # Track current files if needed
-                                    if current_files is not None and entry.get('id'):
-                                        current_files.add(entry.get('id'))
-                                    
-                                    # Skip direct links and ES in index-only mode
-                                    if mode != 'elasticsearch':
-                                        continue
-                                    
-                                    # Add to direct link batch if needed
-                                    if direct_link_manager:  
-                                        direct_link_batch.append(entry)
-                                        if len(direct_link_batch) >= config['performance']['batch_sizes']['direct_links']:
-                                            await direct_link_manager.process_batch(direct_link_batch)
-                                            direct_link_batch = []
-                                    
-                                    # Add to Elasticsearch batch
-                                    if es_client:
-                                        batch.append(entry)
-                                        if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
-                                            es_client.bulk_index(batch, direct_links_db)
-                                            batch = []
-                                
-                                # Process remaining batches
-                                if mode == 'elasticsearch':
-                                    # Process remaining direct links
-                                    if direct_link_manager and direct_link_batch:
-                                        await direct_link_manager.process_batch(direct_link_batch)
-                                    
-                                    # Process remaining Elasticsearch batch
-                                    if es_client and batch:
-                                        es_client.bulk_index(batch, direct_links_db)
-
-                                # Clean up missing files if enabled in config
-                                if config.get('database', {}).get('check_missing_files', True):
-                                    try:
-                                        if mode == 'elasticsearch' and es_client:
-                                            # Use elasticsearch client for cleanup
-                                            if current_files:
-                                                logging.debug(f"Found {len(current_files)} files in current scan")
-                                            es_client.cleanup_missing_files(direct_links_db)
-                                            
-                                            # Get removed file IDs
-                                            removed_ids = es_client.get_removed_file_ids(direct_links_db)
-                                            if removed_ids:
-                                                logging.info(f"Found {len(removed_ids)} removed files")
-                                                workflow_stats.add_removed_files(len(removed_ids))
-                                        elif mode == 'index-only':
-                                            # In index-only mode, just track the file count difference
-                                            last_count = workflow_stats.get_last_file_count()
-                                            if last_count is not None and last_count > workflow_stats.file_count:
-                                                removed = last_count - workflow_stats.file_count
-                                                logging.info(f"Found {removed} removed files")
-                                                workflow_stats.add_removed_files(removed)
-                                                
-                                    except Exception as e:
-                                        logging.error(f"Error during cleanup: {e}")
-                                
-                                # Log final statistics
-                                workflow_stats.log_summary()
-
-                                return 0
-                            except Exception as e:
-                                logger.error(f"Error during scanning: {e}", exc_info=True)
-                                workflow_stats.add_error(str(e))
-                                return 1
-                            finally:
-                                # Clean up connections
-                                if direct_link_manager:
-                                    await direct_link_manager.cleanup()
-                except Exception as e:
-                    logger.error(f"Error in LucidLink setup: {e}", exc_info=True)
-                    return 1
+                        for entry in scanner.scan(root_path=root_path):
+                            # Update statistics based on entry type
+                            is_file = entry.get('type') == 'file'
+                            is_dir = entry.get('type') == 'directory'
+                            workflow_stats.update_stats(
+                                file_count=1 if is_file else 0,
+                                dirs=1 if is_dir else 0,
+                                updated=1,
+                                size=entry.get('size_bytes', 0)
+                            )
+                            
+                            # Track current files if needed
+                            if current_files is not None and entry.get('id'):
+                                current_files.add(entry.get('id'))
+                            
+                            # Skip direct links and ES in index-only mode
+                            if mode != 'elasticsearch':
+                                continue
+                            
+                            # Add to direct link batch if needed
+                            if direct_link_manager:  
+                                direct_link_batch.append(entry)
+                                if len(direct_link_batch) >= config['performance']['batch_sizes']['direct_links']:
+                                    await direct_link_manager.process_batch(direct_link_batch)
+                                    direct_link_batch = []
+                            
+                            # Add to Elasticsearch batch
+                            if es_client:
+                                batch.append(entry)
+                                if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
+                                    es_client.bulk_index(batch, direct_links_db)
+                                    batch = []
+                    
+                    # Process remaining batches
+                    if mode == 'elasticsearch':
+                        # Process remaining direct links
+                        if direct_link_manager and direct_link_batch:
+                            await direct_link_manager.process_batch(direct_link_batch)
+                        
+                        # Process remaining Elasticsearch batch
+                        if es_client and batch:
+                            es_client.bulk_index(batch, direct_links_db)
+                finally:
+                    # Clean up connections
+                    if direct_link_manager:
+                        await direct_link_manager.cleanup()
             else:
-                # Non-LucidLink mode
                 try:
-                    # Initialize scanner
-                    scanner = FileScanner(config)
-                    scanner.setup_database()
-
                     # Process files without LucidLink
                     batch = []
                     logger.info("Scanning root path...")
@@ -366,16 +331,48 @@ Examples:
                             if len(batch) >= config['performance']['batch_sizes']['elasticsearch']:
                                 es_client.bulk_index(batch, direct_links_db)
                                 batch = []
-                    
+                            
                     # Process remaining Elasticsearch batch
                     if mode == 'elasticsearch' and es_client and batch:
                         es_client.bulk_index(batch, direct_links_db)
+                finally:
+                    # Clean up connections
+                    if direct_link_manager:
+                        await direct_link_manager.cleanup()
 
-                    return 0
+            # Clean up missing files if enabled in config
+            if config.get('database', {}).get('check_missing_files', True):
+                try:
+                    if mode == 'elasticsearch' and es_client:
+                        # Use elasticsearch client for cleanup
+                        if current_files:
+                            logging.debug(f"Found {len(current_files)} files in current scan")
+                        es_client.cleanup_missing_files(direct_links_db)
+                        
+                        # Get removed file IDs
+                        removed_ids = es_client.get_removed_file_ids(direct_links_db)
+                        if removed_ids:
+                            logging.info(f"Found {len(removed_ids)} removed files")
+                            workflow_stats.add_removed_files(len(removed_ids))
+                    elif mode == 'index-only':
+                        # In index-only mode, just track the file count difference
+                        last_count = workflow_stats.get_last_file_count()
+                        if last_count is not None and last_count > workflow_stats.file_count:
+                            removed = last_count - workflow_stats.file_count
+                            logging.info(f"Found {removed} removed files")
+                            workflow_stats.add_removed_files(removed)
+                            
                 except Exception as e:
-                    logger.error(f"Error during scanning: {e}", exc_info=True)
-                    workflow_stats.add_error(str(e))
-                    return 1
+                    logging.error(f"Error during cleanup: {e}")
+            
+            # Log final statistics
+            workflow_stats.log_summary()
+
+            return 0
+        except Exception as e:
+            logger.error(f"Error during scanning: {e}", exc_info=True)
+            workflow_stats.add_error(str(e))
+            return 1
 
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)

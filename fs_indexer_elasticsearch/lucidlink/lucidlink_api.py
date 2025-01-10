@@ -46,24 +46,27 @@ class LucidLinkAPI:
         
     async def __aenter__(self):
         """Async context manager entry"""
-        conn = aiohttp.TCPConnector(
-            limit=50,  # Increased for top-level parallelism
-            ttl_dns_cache=300,
-            limit_per_host=50
-        )
-        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        self.session = aiohttp.ClientSession(
-            connector=conn,
-            timeout=timeout,
-            raise_for_status=True
-        )
-        self._request_semaphore = asyncio.Semaphore(50)  # Match connector limit
+        # Initialize session if not already done
+        if not self.session:
+            conn = aiohttp.TCPConnector(
+                limit=50,
+                ttl_dns_cache=300,
+                limit_per_host=50
+            )
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            self.session = aiohttp.ClientSession(
+                connector=conn,
+                timeout=timeout,
+                raise_for_status=True
+            )
+            self._request_semaphore = asyncio.Semaphore(50)
         return self
-        
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         if self.session:
             await self.session.close()
+            self.session = None
             
     def _convert_timestamp(self, ns_timestamp: int) -> datetime:
         """Convert nanosecond epoch timestamp to datetime object"""
@@ -369,7 +372,19 @@ class LucidLinkAPI:
         """Get direct link for a file or directory using v3 API endpoint"""
         try:
             if not self.session:
-                raise RuntimeError("Session not initialized")
+                # Initialize session if not already done
+                conn = aiohttp.TCPConnector(
+                    limit=50,
+                    ttl_dns_cache=300,
+                    limit_per_host=50
+                )
+                timeout = aiohttp.ClientTimeout(total=30, connect=10)
+                self.session = aiohttp.ClientSession(
+                    connector=conn,
+                    timeout=timeout,
+                    raise_for_status=True
+                )
+                self._request_semaphore = asyncio.Semaphore(50)
 
             file_path = self._get_relative_path(file_path)  # Convert to relative path
             encoded_path = quote(file_path)
