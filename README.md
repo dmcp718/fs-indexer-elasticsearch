@@ -98,10 +98,18 @@ Note that in `index-only` mode, the `direct_link` field in the database will be 
 
 ## Usage
 
+To index your files, run:
+
+```bash
+python -m fs_indexer_elasticsearch.main --config config/indexer-config.yaml
+```
+
+The config file specifies which directories to index and other settings. See the sample config file at `config/indexer-config.yaml` for details.
+
 The indexer provides a simple command-line interface:
 
 ```bash
-usage: fs-indexer [-h] [--config CONFIG] [--root-path PATH] [--version VER] [--mode MODE]
+usage: python -m fs_indexer_elasticsearch.main [-h] [--config CONFIG] [--root-path PATH] [--version VER] [--mode MODE]
 
 options:
   -h, --help        show this help message and exit
@@ -117,13 +125,13 @@ indexing options:
 
 ```bash
 # Index files using config file settings
-fs-indexer --config config/indexer-config.yaml
+python -m fs_indexer_elasticsearch.main --config config/indexer-config.yaml
 
 # Index specific directory with LucidLink v2
-fs-indexer --root-path /Volumes/filespace/path --version 2
+python -m fs_indexer_elasticsearch.main --root-path /Volumes/filespace/path --version 2
 
 # Index files without Elasticsearch (index-only mode)
-fs-indexer --root-path /path/to/index --mode index-only
+python -m fs_indexer_elasticsearch.main --root-path /path/to/index --mode index-only
 ```
 
 The indexer will display progress and performance metrics during operation, including:
@@ -156,7 +164,7 @@ You can set the mode in two ways:
    ```
 2. Via command line argument (overrides config file):
    ```bash
-   ./fs-indexer-es --mode index-only
+   python -m fs_indexer_elasticsearch.main --mode index-only
    ```
 
 ## Running with Docker Compose
